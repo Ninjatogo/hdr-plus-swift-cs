@@ -18,6 +18,9 @@ public unsafe class DX12ComputeDevice : IComputeDevice
     private ComPtr<ID3D12Fence> _fence;
     private ulong _fenceValue;
     private IntPtr _fenceEvent;
+    private DX12DescriptorManager? _descriptorManager;
+    private DX12StagingBufferPool? _stagingPool;
+    private DX12MemoryManager? _memoryManager;
     private bool _disposed;
 
     public string DeviceName { get; private set; }
@@ -93,6 +96,15 @@ public unsafe class DX12ComputeDevice : IComputeDevice
         {
             throw new Exception("Failed to create fence event");
         }
+
+        // Create descriptor manager
+        _descriptorManager = new DX12DescriptorManager(_d3d12, _device);
+
+        // Create staging buffer pool
+        _stagingPool = new DX12StagingBufferPool(_d3d12, _device);
+
+        // Create memory manager
+        _memoryManager = new DX12MemoryManager();
     }
 
 #if DEBUG
@@ -142,7 +154,7 @@ public unsafe class DX12ComputeDevice : IComputeDevice
 
     public IComputeCommandBuffer CreateCommandBuffer()
     {
-        return new DX12CommandBuffer(this, _d3d12, _device, _commandQueue);
+        return new DX12CommandBuffer(this, _d3d12, _device, _commandQueue, _descriptorManager!);
     }
 
     public void Submit(IComputeCommandBuffer commandBuffer)
@@ -172,6 +184,10 @@ public unsafe class DX12ComputeDevice : IComputeDevice
 
     internal ComPtr<ID3D12Device> GetDevice() => _device;
     internal ComPtr<ID3D12CommandQueue> GetCommandQueue() => _commandQueue;
+    internal DX12DescriptorManager GetDescriptorManager() => _descriptorManager!;
+    internal DX12StagingBufferPool GetStagingPool() => _stagingPool!;
+    internal D3D12 GetD3D12() => _d3d12;
+    internal DX12MemoryManager GetMemoryManager() => _memoryManager!;
 
     public void Dispose()
     {
@@ -184,6 +200,8 @@ public unsafe class DX12ComputeDevice : IComputeDevice
             PlatformMethods.CloseHandle(_fenceEvent);
         }
 
+        _stagingPool?.Dispose();
+        _descriptorManager?.Dispose();
         _fence.Dispose();
         _commandQueue.Dispose();
         _device.Dispose();

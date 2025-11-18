@@ -10,6 +10,8 @@ internal unsafe class DX12Buffer : IComputeBuffer
     private readonly D3D12 _d3d12;
     private ComPtr<ID3D12Resource> _resource;
     private readonly BufferUsage _usage;
+    private GpuDescriptorHandle _uavDescriptor;
+    private bool _hasUAVDescriptor;
     private bool _disposed;
 
     public int SizeInBytes { get; }
@@ -83,7 +85,53 @@ internal unsafe class DX12Buffer : IComputeBuffer
         else
         {
             // Need to copy to staging buffer first
-            throw new NotImplementedException("Reading from default buffers requires staging buffer (TODO)");
+            var stagingBuffer = _device.GetStagingPool().GetReadbackBuffer((ulong)expectedSize);
+
+            // Create temporary command allocator and list for copy
+            ID3D12CommandAllocator* allocator;
+            _device.GetDevice().Get()->CreateCommandAllocator(CommandListType.Direct, out allocator)
+                .ThrowHResult("Failed to create command allocator");
+
+            ID3D12GraphicsCommandList* cmdList;
+            _device.GetDevice().Get()->CreateCommandList(0, CommandListType.Direct, allocator, null, out cmdList)
+                .ThrowHResult("Failed to create command list");
+
+            // Transition buffer to copy source if needed
+            var barrier = new ResourceBarrier();
+            barrier.Type = ResourceBarrierType.Transition;
+            barrier.Flags = ResourceBarrierFlags.None;
+            barrier.Anonymous.Transition.PResource = _resource.Get();
+            barrier.Anonymous.Transition.Subresource = 0xFFFFFFFF;
+            barrier.Anonymous.Transition.StateBefore = ResourceStates.Common;
+            barrier.Anonymous.Transition.StateAfter = ResourceStates.CopySource;
+            cmdList->ResourceBarrier(1, &barrier);
+
+            // Copy buffer to staging
+            cmdList->CopyBufferRegion(
+                stagingBuffer.GetResource().Get(), 0,
+                _resource.Get(), 0,
+                (ulong)expectedSize
+            );
+
+            // Transition back
+            barrier.Anonymous.Transition.StateBefore = ResourceStates.CopySource;
+            barrier.Anonymous.Transition.StateAfter = ResourceStates.Common;
+            cmdList->ResourceBarrier(1, &barrier);
+
+            cmdList->Close();
+
+            // Execute and wait
+            var cmdLists = stackalloc ID3D12CommandList*[1];
+            cmdLists[0] = (ID3D12CommandList*)cmdList;
+            _device.GetCommandQueue().Get()->ExecuteCommandLists(1, cmdLists);
+            _device.WaitIdle();
+
+            // Read from staging buffer
+            stagingBuffer.ReadData(destination);
+
+            // Cleanup
+            cmdList->Release();
+            allocator->Release();
         }
     }
 
@@ -105,8 +153,54 @@ internal unsafe class DX12Buffer : IComputeBuffer
         }
         else
         {
-            // Need to use upload heap
-            throw new NotImplementedException("Writing to default buffers requires upload heap (TODO)");
+            // Use upload staging buffer
+            var stagingBuffer = _device.GetStagingPool().GetUploadBuffer((ulong)dataSize);
+
+            // Write to staging buffer
+            stagingBuffer.WriteData(source);
+
+            // Create temporary command allocator and list for copy
+            ID3D12CommandAllocator* allocator;
+            _device.GetDevice().Get()->CreateCommandAllocator(CommandListType.Direct, out allocator)
+                .ThrowHResult("Failed to create command allocator");
+
+            ID3D12GraphicsCommandList* cmdList;
+            _device.GetDevice().Get()->CreateCommandList(0, CommandListType.Direct, allocator, null, out cmdList)
+                .ThrowHResult("Failed to create command list");
+
+            // Transition buffer to copy dest if needed
+            var barrier = new ResourceBarrier();
+            barrier.Type = ResourceBarrierType.Transition;
+            barrier.Flags = ResourceBarrierFlags.None;
+            barrier.Anonymous.Transition.PResource = _resource.Get();
+            barrier.Anonymous.Transition.Subresource = 0xFFFFFFFF;
+            barrier.Anonymous.Transition.StateBefore = ResourceStates.Common;
+            barrier.Anonymous.Transition.StateAfter = ResourceStates.CopyDest;
+            cmdList->ResourceBarrier(1, &barrier);
+
+            // Copy staging to buffer
+            cmdList->CopyBufferRegion(
+                _resource.Get(), 0,
+                stagingBuffer.GetResource().Get(), 0,
+                (ulong)dataSize
+            );
+
+            // Transition back
+            barrier.Anonymous.Transition.StateBefore = ResourceStates.CopyDest;
+            barrier.Anonymous.Transition.StateAfter = ResourceStates.Common;
+            cmdList->ResourceBarrier(1, &barrier);
+
+            cmdList->Close();
+
+            // Execute and wait
+            var cmdLists = stackalloc ID3D12CommandList*[1];
+            cmdLists[0] = (ID3D12CommandList*)cmdList;
+            _device.GetCommandQueue().Get()->ExecuteCommandLists(1, cmdLists);
+            _device.WaitIdle();
+
+            // Cleanup
+            cmdList->Release();
+            allocator->Release();
         }
     }
 
@@ -123,6 +217,34 @@ internal unsafe class DX12Buffer : IComputeBuffer
     }
 
     internal ComPtr<ID3D12Resource> GetResource() => _resource;
+
+    /// <summary>
+    /// Gets or creates a UAV descriptor for this buffer.
+    /// Note: Descriptors are created from the descriptor manager's frame heap,
+    /// so they should be recreated each frame if the heap is reset.
+    /// </summary>
+    internal GpuDescriptorHandle GetOrCreateUAVDescriptor(DX12DescriptorManager descriptorManager)
+    {
+        // For default (GPU) buffers, always create a fresh descriptor
+        // since the descriptor heap may be reset each frame
+        if (_usage == BufferUsage.Default)
+        {
+            uint numElements = (uint)(SizeInBytes / 4); // Assume 4-byte elements
+            var (cpu, gpu) = descriptorManager.CreateBufferUAV(_resource.Get(), numElements, 4);
+            return gpu;
+        }
+
+        // For upload/readback buffers, cache the descriptor
+        if (!_hasUAVDescriptor)
+        {
+            uint numElements = (uint)(SizeInBytes / 4);
+            var (cpu, gpu) = descriptorManager.CreateBufferUAV(_resource.Get(), numElements, 4);
+            _uavDescriptor = gpu;
+            _hasUAVDescriptor = true;
+        }
+
+        return _uavDescriptor;
+    }
 
     public void Dispose()
     {

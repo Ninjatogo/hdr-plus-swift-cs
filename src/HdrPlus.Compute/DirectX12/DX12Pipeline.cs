@@ -49,52 +49,44 @@ internal unsafe class DX12Pipeline : IComputePipeline
 
     private void CreateRootSignature(ComPtr<ID3D12Device> device, byte[] shaderBytecode)
     {
-        // Create a simple root signature with UAV descriptors for compute
-        // For simplicity, using a default root signature for now
-        // TODO: Parse shader reflection and create optimal root signature
+        // Create root signature with descriptor table for UAVs and CBVs
+        // This allows binding multiple resources through descriptor heaps
 
-        var ranges = stackalloc DescriptorRange1[2];
+        // Define descriptor ranges
+        var ranges = stackalloc DescriptorRange[2];
 
         // UAV range for textures/buffers (u0-u15)
-        ranges[0] = new DescriptorRange1
+        ranges[0] = new DescriptorRange
         {
             RangeType = DescriptorRangeType.Uav,
             NumDescriptors = 16,
             BaseShaderRegister = 0,
             RegisterSpace = 0,
-            Flags = DescriptorRangeFlags.None,
             OffsetInDescriptorsFromTableStart = 0
         };
 
         // CBV range for constants (b0-b7)
-        ranges[1] = new DescriptorRange1
+        ranges[1] = new DescriptorRange
         {
             RangeType = DescriptorRangeType.Cbv,
             NumDescriptors = 8,
             BaseShaderRegister = 0,
             RegisterSpace = 0,
-            Flags = DescriptorRangeFlags.None,
             OffsetInDescriptorsFromTableStart = 16
         };
 
-        var rootParams = stackalloc RootParameter1[1];
-        rootParams[0] = new RootParameter1
-        {
-            ParameterType = RootParameterType.DescriptorTable,
-            ShaderVisibility = ShaderVisibility.All
-        };
-        rootParams[0].Anonymous.DescriptorTable = new RootDescriptorTable1
+        // Create root parameters
+        var rootParams = stackalloc RootParameter[1];
+        rootParams[0].ParameterType = RootParameterType.DescriptorTable;
+        rootParams[0].ShaderVisibility = ShaderVisibility.All;
+        rootParams[0].Anonymous.DescriptorTable = new RootDescriptorTable
         {
             NumDescriptorRanges = 2,
             PDescriptorRanges = ranges
         };
 
-        var rootSigDesc = new VersionedRootSignatureDesc
-        {
-            Version = D3DRootSignatureVersion.V11
-        };
-
-        var desc11 = new RootSignatureDesc1
+        // Create root signature descriptor
+        var rootSigDesc = new RootSignatureDesc
         {
             NumParameters = 1,
             PParameters = rootParams,
@@ -102,43 +94,40 @@ internal unsafe class DX12Pipeline : IComputePipeline
             PStaticSamplers = null,
             Flags = RootSignatureFlags.None
         };
-        rootSigDesc.Anonymous.Desc11 = desc11;
 
+        // Serialize and create root signature
         ComPtr<ID3DBlob> signature = default;
         ComPtr<ID3DBlob> error = default;
 
-        fixed (byte* bytecodePtr = shaderBytecode)
+        ID3DBlob* sigPtr = null;
+        ID3DBlob* errPtr = null;
+
+        int hr = _d3d12.SerializeRootSignature(&rootSigDesc, D3DRootSignatureVersion.V10, &sigPtr, &errPtr);
+
+        if (hr != 0)
         {
-            // For now, create a simple default root signature
-            // TODO: Use D3D12SerializeVersionedRootSignature
-
-            // Simplified: create empty root signature
-            var simpleDesc = new RootSignatureDesc
+            string errorMsg = "Failed to serialize root signature";
+            if (errPtr != null)
             {
-                NumParameters = 0,
-                PParameters = null,
-                NumStaticSamplers = 0,
-                PStaticSamplers = null,
-                Flags = RootSignatureFlags.None
-            };
-
-            ID3DBlob* sigPtr, errPtr;
-            _d3d12.SerializeRootSignature(&simpleDesc, D3DRootSignatureVersion.V10, &sigPtr, &errPtr)
-                .ThrowHResult("Failed to serialize root signature");
-
-            signature = new ComPtr<ID3DBlob>(sigPtr);
-
-            ID3D12RootSignature* rootSigPtr;
-            device.Get()->CreateRootSignature(
-                0,
-                signature.Get()->GetBufferPointer(),
-                signature.Get()->GetBufferSize(),
-                out rootSigPtr
-            ).ThrowHResult("Failed to create root signature");
-
-            _rootSignature = new ComPtr<ID3D12RootSignature>(rootSigPtr);
+                var errorBlob = new ComPtr<ID3DBlob>(errPtr);
+                // Try to get error message
+                errorMsg += $" (HRESULT: 0x{hr:X8})";
+                errorBlob.Dispose();
+            }
+            throw new Exception(errorMsg);
         }
 
+        signature = new ComPtr<ID3DBlob>(sigPtr);
+
+        ID3D12RootSignature* rootSigPtr;
+        device.Get()->CreateRootSignature(
+            0,
+            signature.Get()->GetBufferPointer(),
+            signature.Get()->GetBufferSize(),
+            out rootSigPtr
+        ).ThrowHResult("Failed to create root signature");
+
+        _rootSignature = new ComPtr<ID3D12RootSignature>(rootSigPtr);
         signature.Dispose();
     }
 
