@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>12</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- LibRaw wrapper for reading RAW/DNG files -->
+    <PackageReference Include="LibRawSharp" Version="0.1.0" Condition="'$(OS)' == 'Windows_NT'" />
+
+    <!-- TiffLibrary for writing DNG files -->
+    <PackageReference Include="TiffLibrary" Version="0.8.2" />
+
+    <!-- ImageSharp for general image processing -->
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\HdrPlus.Core\HdrPlus.Core.csproj" />
+  </ItemGroup>
+
+</Project>

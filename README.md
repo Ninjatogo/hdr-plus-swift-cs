@@ -4,6 +4,28 @@ Burst Photo is a macOS app written in Swift / SwiftUI / Metal that implements a 
 
 If you are a researcher or you prefer Python/PyTorch, you can check out [hdr-plus-pytorch](https://github.com/martin-marek/hdr-plus-pytorch).
 
+## 🆕 C#/.NET Cross-Platform Migration
+
+This repository now includes a **cross-platform C#/.NET implementation** in the `src/` directory! The migration enables HDR+ processing on Windows, Linux, and macOS (planned) using modern .NET 8 and cross-platform GPU compute APIs.
+
+**Status:** 🟢 Vertical slice complete - See [`src/README.md`](src/README.md) for details
+
+**Key Features:**
+- DirectX 12 backend for Windows (fully functional)
+- Clean GPU abstraction layer (ready for Vulkan/Metal)
+- 6 critical shaders converted (Metal → HLSL)
+- DNG I/O with cross-platform libraries
+- CLI application with progress reporting
+
+**Quick Start (C# Version):**
+```bash
+cd src
+dotnet build
+dotnet run --project HdrPlus.CLI test
+```
+
+For detailed migration documentation, see the [C# implementation README](src/README_CS.md).
+
 # Example
 
 In the example, a burst of 51 images was taken at ISO 51,200 on a Sony A7S III camera. Exposure was adjusted to taste with equal settings for both images. Here is a [comparison](docs/assets/images/gallery/monika_stars.jpg) of a single image from the burst versus a merge of all the images.
