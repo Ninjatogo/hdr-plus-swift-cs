@@ -273,3 +273,329 @@ void correct_upsampling_error(uint3 gid : SV_DispatchThreadID)
 
     prev_alignment_corrected[gid.xy] = best_align;
 }
+
+// =============================================================================
+// COMPUTE_TILE_DIFFERENCES25 - Optimized for search_distance == 2 (25 combinations)
+// Highly-optimized function that reduces memory accesses by using a sliding
+// buffer vector covering 5 complete rows of the comparison texture
+// =============================================================================
+[numthreads(8, 8, 1)]
+void compute_tile_differences25(uint3 gid : SV_DispatchThreadID)
+{
+    // Get texture dimensions
+    uint texture_width, texture_height;
+    ref_texture.GetDimensions(texture_width, texture_height);
+
+    int ref_tile_x, ref_tile_y, comp_tile_x, comp_tile_y, tmp_index, dx_i, dy_i;
+
+    // Compute tile position if previous alignment were 0
+    int x0 = gid.x * tile_size / 2;
+    int y0 = gid.y * tile_size / 2;
+
+    // Factor in previous alignment
+    int2 prev_align = prev_alignment[gid.xy];
+    int dx0 = downscale_factor * prev_align.x;
+    int dy0 = downscale_factor * prev_align.y;
+
+    float diff[25];
+    for (int i = 0; i < 25; i++) diff[i] = 0;
+
+    float diff_abs0, diff_abs1;
+    float tmp_ref0, tmp_ref1;
+    float tmp_comp[5 * 68]; // Buffer for 5 rows with tile_size + 4 columns each
+
+    // Loop over first 4 rows of comp_texture
+    for (int dy = -2; dy < +2; dy++) {
+        // Loop over columns to copy first 4 rows into tmp_comp
+        for (int dx = -2; dx < tile_size + 2; dx++) {
+            comp_tile_x = x0 + dx0 + dx;
+            comp_tile_y = y0 + dy0 + dy;
+
+            // Index in tmp_comp
+            tmp_index = (dy + 2) * (tile_size + 4) + dx + 2;
+
+            // If outside frame, use minimum value
+            if ((comp_tile_x < 0) || (comp_tile_y < 0) ||
+                (comp_tile_x >= (int)texture_width) || (comp_tile_y >= (int)texture_height)) {
+                tmp_comp[tmp_index] = FLOAT16_MIN_VAL;
+            } else {
+                tmp_comp[tmp_index] = FLOAT16_05_VAL * comp_texture[uint2(comp_tile_x, comp_tile_y)].r;
+            }
+        }
+    }
+
+    // Loop over rows of ref_texture
+    for (int dy = 0; dy < tile_size; dy++) {
+        // Copy 1 additional row of comp_texture into tmp_comp (sliding buffer)
+        for (int dx = -2; dx < tile_size + 2; dx++) {
+            comp_tile_x = x0 + dx0 + dx;
+            comp_tile_y = y0 + dy0 + dy + 2;
+
+            // Circular buffer index
+            tmp_index = ((dy + 4) % 5) * (tile_size + 4) + dx + 2;
+
+            if ((comp_tile_x < 0) || (comp_tile_y < 0) ||
+                (comp_tile_x >= (int)texture_width) || (comp_tile_y >= (int)texture_height)) {
+                tmp_comp[tmp_index] = FLOAT16_MIN_VAL;
+            } else {
+                tmp_comp[tmp_index] = FLOAT16_05_VAL * comp_texture[uint2(comp_tile_x, comp_tile_y)].r;
+            }
+        }
+
+        // Loop over columns of ref_texture (process 2 pixels at a time)
+        for (int dx = 0; dx < tile_size; dx += 2) {
+            ref_tile_x = x0 + dx;
+            ref_tile_y = y0 + dy;
+
+            tmp_ref0 = ref_texture[uint2(ref_tile_x + 0, ref_tile_y)].r;
+            tmp_ref1 = ref_texture[uint2(ref_tile_x + 1, ref_tile_y)].r;
+
+            // Loop over 25 test displacements
+            for (int i = 0; i < 25; i++) {
+                dx_i = i % 5;
+                dy_i = i / 5;
+
+                // Index in tmp_comp (circular buffer)
+                tmp_index = ((dy + dy_i) % 5) * (tile_size + 4) + dx + dx_i;
+
+                diff_abs0 = abs(tmp_ref0 - 2.0f * tmp_comp[tmp_index + 0]);
+                diff_abs1 = abs(tmp_ref1 - 2.0f * tmp_comp[tmp_index + 1]);
+
+                // Add difference to corresponding combination
+                diff[i] += ((1 - weight_ssd) * (diff_abs0 + diff_abs1) +
+                           weight_ssd * (diff_abs0 * diff_abs0 + diff_abs1 * diff_abs1));
+            }
+        }
+    }
+
+    // Store tile differences in texture
+    for (int i = 0; i < 25; i++) {
+        tile_diff[uint3(i, gid.x, gid.y)] = diff[i];
+    }
+}
+
+// =============================================================================
+// COMPUTE_TILE_DIFFERENCES_EXPOSURE25 - With exposure correction (25 combinations)
+// Optimized function that scales pixel intensities by the ratio of mean values
+// of both tiles to handle slight exposure differences
+// =============================================================================
+[numthreads(8, 8, 1)]
+void compute_tile_differences_exposure25(uint3 gid : SV_DispatchThreadID)
+{
+    // Get texture dimensions
+    uint texture_width, texture_height;
+    ref_texture.GetDimensions(texture_width, texture_height);
+
+    int ref_tile_x, ref_tile_y, comp_tile_x, comp_tile_y, tmp_index, dx_i, dy_i;
+
+    // Compute tile position
+    int x0 = gid.x * tile_size / 2;
+    int y0 = gid.y * tile_size / 2;
+
+    // Factor in previous alignment
+    int2 prev_align = prev_alignment[gid.xy];
+    int dx0 = downscale_factor * prev_align.x;
+    int dy0 = downscale_factor * prev_align.y;
+
+    float sum_u[25], sum_v[25], diff[25], ratio[25];
+    for (int i = 0; i < 25; i++) {
+        sum_u[i] = 0;
+        sum_v[i] = 0;
+        diff[i] = 0;
+    }
+
+    float diff_abs0, diff_abs1;
+    float tmp_ref0, tmp_ref1, tmp_comp_val0, tmp_comp_val1;
+    float tmp_comp[5 * 68];
+
+    // First pass: Calculate sums for exposure ratio estimation
+    // Loop over first 4 rows
+    for (int dy = -2; dy < +2; dy++) {
+        for (int dx = -2; dx < tile_size + 2; dx++) {
+            comp_tile_x = x0 + dx0 + dx;
+            comp_tile_y = y0 + dy0 + dy;
+            tmp_index = (dy + 2) * (tile_size + 4) + dx + 2;
+
+            if ((comp_tile_x < 0) || (comp_tile_y < 0) ||
+                (comp_tile_x >= (int)texture_width) || (comp_tile_y >= (int)texture_height)) {
+                tmp_comp[tmp_index] = FLOAT16_MAX_VAL;
+            } else {
+                tmp_comp[tmp_index] = max(FLOAT16_ZERO_VAL, FLOAT16_05_VAL * comp_texture[uint2(comp_tile_x, comp_tile_y)].r);
+            }
+        }
+    }
+
+    // Calculate sums for exposure ratio
+    for (int dy = 0; dy < tile_size; dy++) {
+        // Copy additional row
+        for (int dx = -2; dx < tile_size + 2; dx++) {
+            comp_tile_x = x0 + dx0 + dx;
+            comp_tile_y = y0 + dy0 + dy + 2;
+            tmp_index = ((dy + 4) % 5) * (tile_size + 4) + dx + 2;
+
+            if ((comp_tile_x < 0) || (comp_tile_y < 0) ||
+                (comp_tile_x >= (int)texture_width) || (comp_tile_y >= (int)texture_height)) {
+                tmp_comp[tmp_index] = FLOAT16_MAX_VAL;
+            } else {
+                tmp_comp[tmp_index] = max(FLOAT16_ZERO_VAL, FLOAT16_05_VAL * comp_texture[uint2(comp_tile_x, comp_tile_y)].r);
+            }
+        }
+
+        for (int dx = 0; dx < tile_size; dx += 2) {
+            ref_tile_x = x0 + dx;
+            ref_tile_y = y0 + dy;
+
+            tmp_ref0 = max(FLOAT16_ZERO_VAL, ref_texture[uint2(ref_tile_x + 0, ref_tile_y)].r);
+            tmp_ref1 = max(FLOAT16_ZERO_VAL, ref_texture[uint2(ref_tile_x + 1, ref_tile_y)].r);
+
+            for (int i = 0; i < 25; i++) {
+                dx_i = i % 5;
+                dy_i = i / 5;
+                tmp_index = ((dy + dy_i) % 5) * (tile_size + 4) + dx + dx_i;
+
+                tmp_comp_val0 = tmp_comp[tmp_index + 0];
+                tmp_comp_val1 = tmp_comp[tmp_index + 1];
+
+                if (tmp_comp_val0 > -1) {
+                    sum_u[i] += tmp_ref0;
+                    sum_v[i] += 2.0f * tmp_comp_val0;
+                }
+
+                if (tmp_comp_val1 > -1) {
+                    sum_u[i] += tmp_ref1;
+                    sum_v[i] += 2.0f * tmp_comp_val1;
+                }
+            }
+        }
+    }
+
+    // Calculate exposure ratio for each displacement
+    for (int i = 0; i < 25; i++) {
+        ratio[i] = clamp(sum_u[i] / (sum_v[i] + 1e-9), 0.9f, 1.1f);
+    }
+
+    // Second pass: Calculate differences with exposure correction
+    // Reload comparison texture
+    for (int dy = -2; dy < +2; dy++) {
+        for (int dx = -2; dx < tile_size + 2; dx++) {
+            comp_tile_x = x0 + dx0 + dx;
+            comp_tile_y = y0 + dy0 + dy;
+            tmp_index = (dy + 2) * (tile_size + 4) + dx + 2;
+
+            if ((comp_tile_x < 0) || (comp_tile_y < 0) ||
+                (comp_tile_x >= (int)texture_width) || (comp_tile_y >= (int)texture_height)) {
+                tmp_comp[tmp_index] = FLOAT16_MIN_VAL;
+            } else {
+                tmp_comp[tmp_index] = max(FLOAT16_ZERO_VAL, FLOAT16_05_VAL * comp_texture[uint2(comp_tile_x, comp_tile_y)].r);
+            }
+        }
+    }
+
+    for (int dy = 0; dy < tile_size; dy++) {
+        for (int dx = -2; dx < tile_size + 2; dx++) {
+            comp_tile_x = x0 + dx0 + dx;
+            comp_tile_y = y0 + dy0 + dy + 2;
+            tmp_index = ((dy + 4) % 5) * (tile_size + 4) + dx + 2;
+
+            if ((comp_tile_x < 0) || (comp_tile_y < 0) ||
+                (comp_tile_x >= (int)texture_width) || (comp_tile_y >= (int)texture_height)) {
+                tmp_comp[tmp_index] = FLOAT16_MIN_VAL;
+            } else {
+                tmp_comp[tmp_index] = max(FLOAT16_ZERO_VAL, FLOAT16_05_VAL * comp_texture[uint2(comp_tile_x, comp_tile_y)].r);
+            }
+        }
+
+        for (int dx = 0; dx < tile_size; dx += 2) {
+            ref_tile_x = x0 + dx;
+            ref_tile_y = y0 + dy;
+
+            tmp_ref0 = max(FLOAT16_ZERO_VAL, ref_texture[uint2(ref_tile_x + 0, ref_tile_y)].r);
+            tmp_ref1 = max(FLOAT16_ZERO_VAL, ref_texture[uint2(ref_tile_x + 1, ref_tile_y)].r);
+
+            for (int i = 0; i < 25; i++) {
+                dx_i = i % 5;
+                dy_i = i / 5;
+                tmp_index = ((dy + dy_i) % 5) * (tile_size + 4) + dx + dx_i;
+
+                diff_abs0 = abs(tmp_ref0 - 2.0f * ratio[i] * tmp_comp[tmp_index + 0]);
+                diff_abs1 = abs(tmp_ref1 - 2.0f * ratio[i] * tmp_comp[tmp_index + 1]);
+
+                diff[i] += ((1 - weight_ssd) * (diff_abs0 + diff_abs1) +
+                           weight_ssd * (diff_abs0 * diff_abs0 + diff_abs1 * diff_abs1));
+            }
+        }
+    }
+
+    // Store tile differences
+    for (int i = 0; i < 25; i++) {
+        tile_diff[uint3(i, gid.x, gid.y)] = diff[i];
+    }
+}
+
+// =============================================================================
+// WARP_TEXTURE_XTRANS - Warp texture for X-Trans sensor pattern
+// Uses weighted blending of alignment vectors from multiple overlapping tiles
+// =============================================================================
+[numthreads(8, 8, 1)]
+void warp_texture_xtrans(uint3 gid : SV_DispatchThreadID)
+{
+    // Get texture dimensions
+    uint texture_width, texture_height;
+    texture_to_warp.GetDimensions(texture_width, texture_height);
+
+    int tile_half_size = warp_tile_size / 2;
+
+    // Load coordinates of output pixel
+    int x1_pix = gid.x;
+    int y1_pix = gid.y;
+
+    // Compute the coordinates of output pixel in tile-grid units
+    float x1_grid = float(x1_pix - tile_half_size) / float(texture_width - warp_tile_size - 1) * (n_tiles_x - 1);
+    float y1_grid = float(y1_pix - tile_half_size) / float(texture_height - warp_tile_size - 1) * (n_tiles_y - 1);
+
+    // Compute the two possible tile-grid indices that the output pixel belongs to
+    int x_grid_list[4] = {(int)floor(x1_grid), (int)floor(x1_grid), (int)ceil(x1_grid), (int)ceil(x1_grid)};
+    int y_grid_list[4] = {(int)floor(y1_grid), (int)ceil(y1_grid), (int)floor(y1_grid), (int)ceil(y1_grid)};
+
+    // Loop over the four possible tile-grid indices
+    float total_intensity = 0;
+    float total_weight = 0;
+
+    for (int i = 0; i < 4; i++) {
+        int x_grid = x_grid_list[i];
+        int y_grid = y_grid_list[i];
+
+        // Compute pixel coordinates of the center of the reference tile
+        int x0_pix = (int)floor(tile_half_size + float(x_grid) / float(n_tiles_x - 1) *
+                     (texture_width - warp_tile_size - 1));
+        int y0_pix = (int)floor(tile_half_size + float(y_grid) / float(n_tiles_y - 1) *
+                     (texture_height - warp_tile_size - 1));
+
+        // Check that the output pixel falls within the reference tile
+        if ((abs(x1_pix - x0_pix) <= tile_half_size) && (abs(y1_pix - y0_pix) <= tile_half_size)) {
+            // Compute tile displacement
+            int2 prev_align = alignment[uint2(x_grid, y_grid)];
+            int dx = downscale_factor * prev_align.x;
+            int dy = downscale_factor * prev_align.y;
+
+            // Load coordinates of the corresponding pixel from the comparison tile
+            int x2_pix = x1_pix + dx;
+            int y2_pix = y1_pix + dy;
+
+            // Compute the weight of the aligned pixel (based on distance from tile center)
+            int dist_x = abs(x1_pix - x0_pix);
+            int dist_y = abs(y1_pix - y0_pix);
+            float weight_x = warp_tile_size - dist_x - dist_y;
+            float weight_y = warp_tile_size - dist_x - dist_y;
+            float curr_weight = weight_x * weight_y;
+            total_weight += curr_weight;
+
+            // Add pixel value to the output
+            total_intensity += curr_weight * texture_to_warp[uint2(x2_pix, y2_pix)].r;
+        }
+    }
+
+    // Write output pixel
+    float out_intensity = total_intensity / total_weight;
+    warped_texture[gid.xy] = out_intensity;
+}
