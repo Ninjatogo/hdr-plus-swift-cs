@@ -6,8 +6,9 @@ namespace HdrPlus.IO;
 
 /// <summary>
 /// Simple RAW/DNG reader implementation using ImageSharp.
-/// For production, consider using LibRaw or DNGLab for better RAW support.
-/// This is a minimal implementation for the vertical slice.
+/// This is a minimal fallback implementation.
+/// For production use, prefer LibRawDngReader which supports 700+ RAW formats
+/// and extracts full metadata including color matrices and EXIF data.
 /// </summary>
 public class SimpleRawReader : IDngReader
 {
@@ -66,34 +67,3 @@ public class SimpleRawReader : IDngReader
         };
     }
 }
-
-/// <summary>
-/// LibRaw-based DNG reader (requires LibRawSharp NuGet package).
-/// Uncomment when LibRaw bindings are properly configured.
-/// </summary>
-/*
-public class LibRawDngReader : IDngReader
-{
-    public string[] SupportedExtensions => new[]
-    {
-        ".dng", ".cr2", ".cr3", ".nef", ".arw", ".orf", ".rw2", ".raf", ".raw"
-    };
-
-    public bool IsSupported(string filePath)
-    {
-        var ext = Path.GetExtension(filePath).ToLowerInvariant();
-        return SupportedExtensions.Contains(ext);
-    }
-
-    public DngImage ReadDng(string filePath)
-    {
-        // TODO: Implement LibRaw integration
-        // using var rawProcessor = new LibRaw();
-        // rawProcessor.OpenFile(filePath);
-        // rawProcessor.Unpack();
-        // ... extract raw data and metadata
-
-        throw new NotImplementedException("LibRaw integration pending");
-    }
-}
-*/
