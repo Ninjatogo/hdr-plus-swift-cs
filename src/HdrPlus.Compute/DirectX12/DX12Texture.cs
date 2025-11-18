@@ -10,7 +10,10 @@ internal unsafe class DX12Texture : IComputeTexture
     private readonly DX12ComputeDevice _device;
     private readonly D3D12 _d3d12;
     private ComPtr<ID3D12Resource> _resource;
+    private GpuDescriptorHandle _uavDescriptor;
+    private bool _hasUAVDescriptor;
     private bool _disposed;
+    private readonly Silk.NET.DXGI.Format _dxgiFormat;
 
     public int Width { get; }
     public int Height { get; }
@@ -27,6 +30,7 @@ internal unsafe class DX12Texture : IComputeTexture
         Height = height;
         Depth = depth;
         Format = format;
+        _dxgiFormat = ConvertFormat(format);
 
         var heapProps = new HeapProperties
         {
@@ -79,17 +83,209 @@ internal unsafe class DX12Texture : IComputeTexture
 
     public void ReadData<T>(Span<T> destination) where T : unmanaged
     {
-        // Reading from GPU textures requires readback buffer
-        throw new NotImplementedException("Texture readback not yet implemented (requires staging buffer)");
+        int elementSize = Marshal.SizeOf<T>();
+        int expectedElements = Width * Height * Depth;
+
+        if (destination.Length < expectedElements)
+        {
+            throw new ArgumentException($"Destination buffer too small. Expected at least {expectedElements} elements.");
+        }
+
+        ulong dataSize = (ulong)(expectedElements * elementSize);
+
+        // Get staging buffer from pool
+        var stagingBuffer = _device.GetStagingPool().GetReadbackBuffer(dataSize);
+
+        // Create a temporary command allocator and list for the copy
+        ID3D12CommandAllocator* allocator;
+        _device.GetDevice().Get()->CreateCommandAllocator(CommandListType.Direct, out allocator)
+            .ThrowHResult("Failed to create command allocator");
+
+        ID3D12GraphicsCommandList* cmdList;
+        _device.GetDevice().Get()->CreateCommandList(0, CommandListType.Direct, allocator, null, out cmdList)
+            .ThrowHResult("Failed to create command list");
+
+        // Transition texture to copy source
+        var barrier = new ResourceBarrier();
+        barrier.Type = ResourceBarrierType.Transition;
+        barrier.Flags = ResourceBarrierFlags.None;
+        barrier.Anonymous.Transition.PResource = _resource.Get();
+        barrier.Anonymous.Transition.Subresource = 0xFFFFFFFF;
+        barrier.Anonymous.Transition.StateBefore = ResourceStates.Common;
+        barrier.Anonymous.Transition.StateAfter = ResourceStates.CopySource;
+        cmdList->ResourceBarrier(1, &barrier);
+
+        // Copy texture to staging buffer
+        var srcLocation = new TextureCopyLocation
+        {
+            PResource = _resource.Get(),
+            Type = TextureCopyType.SubresourceIndex
+        };
+        srcLocation.Anonymous.SubresourceIndex = 0;
+
+        var dstLocation = new TextureCopyLocation
+        {
+            PResource = stagingBuffer.GetResource().Get(),
+            Type = TextureCopyType.PlacedFootprint
+        };
+
+        // Calculate footprint
+        var footprint = new PlacedSubresourceFootprint
+        {
+            Offset = 0,
+            Footprint = new SubresourceFootprint
+            {
+                Format = _dxgiFormat,
+                Width = (uint)Width,
+                Height = (uint)Height,
+                Depth = (uint)Depth,
+                RowPitch = (uint)((Width * GetFormatBytes(_dxgiFormat) + 255) & ~255) // 256-byte aligned
+            }
+        };
+        dstLocation.Anonymous.PlacedFootprint = footprint;
+
+        cmdList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, null);
+
+        // Transition back
+        barrier.Anonymous.Transition.StateBefore = ResourceStates.CopySource;
+        barrier.Anonymous.Transition.StateAfter = ResourceStates.Common;
+        cmdList->ResourceBarrier(1, &barrier);
+
+        cmdList->Close();
+
+        // Execute and wait
+        var cmdLists = stackalloc ID3D12CommandList*[1];
+        cmdLists[0] = (ID3D12CommandList*)cmdList;
+        _device.GetCommandQueue().Get()->ExecuteCommandLists(1, cmdLists);
+        _device.WaitIdle();
+
+        // Read from staging buffer
+        stagingBuffer.ReadData(destination);
+
+        // Cleanup
+        cmdList->Release();
+        allocator->Release();
     }
 
     public void WriteData<T>(ReadOnlySpan<T> source) where T : unmanaged
     {
-        // Writing to GPU textures requires upload buffer
-        throw new NotImplementedException("Texture upload not yet implemented (requires staging buffer)");
+        int elementSize = Marshal.SizeOf<T>();
+        int expectedElements = Width * Height * Depth;
+
+        if (source.Length < expectedElements)
+        {
+            throw new ArgumentException($"Source buffer too small. Expected at least {expectedElements} elements.");
+        }
+
+        ulong dataSize = (ulong)(expectedElements * elementSize);
+
+        // Get staging buffer from pool
+        var stagingBuffer = _device.GetStagingPool().GetUploadBuffer(dataSize);
+
+        // Write to staging buffer
+        stagingBuffer.WriteData(source);
+
+        // Create a temporary command allocator and list for the copy
+        ID3D12CommandAllocator* allocator;
+        _device.GetDevice().Get()->CreateCommandAllocator(CommandListType.Direct, out allocator)
+            .ThrowHResult("Failed to create command allocator");
+
+        ID3D12GraphicsCommandList* cmdList;
+        _device.GetDevice().Get()->CreateCommandList(0, CommandListType.Direct, allocator, null, out cmdList)
+            .ThrowHResult("Failed to create command list");
+
+        // Transition texture to copy dest
+        var barrier = new ResourceBarrier();
+        barrier.Type = ResourceBarrierType.Transition;
+        barrier.Flags = ResourceBarrierFlags.None;
+        barrier.Anonymous.Transition.PResource = _resource.Get();
+        barrier.Anonymous.Transition.Subresource = 0xFFFFFFFF;
+        barrier.Anonymous.Transition.StateBefore = ResourceStates.Common;
+        barrier.Anonymous.Transition.StateAfter = ResourceStates.CopyDest;
+        cmdList->ResourceBarrier(1, &barrier);
+
+        // Copy staging buffer to texture
+        var srcLocation = new TextureCopyLocation
+        {
+            PResource = stagingBuffer.GetResource().Get(),
+            Type = TextureCopyType.PlacedFootprint
+        };
+
+        // Calculate footprint
+        var footprint = new PlacedSubresourceFootprint
+        {
+            Offset = 0,
+            Footprint = new SubresourceFootprint
+            {
+                Format = _dxgiFormat,
+                Width = (uint)Width,
+                Height = (uint)Height,
+                Depth = (uint)Depth,
+                RowPitch = (uint)((Width * GetFormatBytes(_dxgiFormat) + 255) & ~255) // 256-byte aligned
+            }
+        };
+        srcLocation.Anonymous.PlacedFootprint = footprint;
+
+        var dstLocation = new TextureCopyLocation
+        {
+            PResource = _resource.Get(),
+            Type = TextureCopyType.SubresourceIndex
+        };
+        dstLocation.Anonymous.SubresourceIndex = 0;
+
+        cmdList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, null);
+
+        // Transition back
+        barrier.Anonymous.Transition.StateBefore = ResourceStates.CopyDest;
+        barrier.Anonymous.Transition.StateAfter = ResourceStates.Common;
+        cmdList->ResourceBarrier(1, &barrier);
+
+        cmdList->Close();
+
+        // Execute and wait
+        var cmdLists = stackalloc ID3D12CommandList*[1];
+        cmdLists[0] = (ID3D12CommandList*)cmdList;
+        _device.GetCommandQueue().Get()->ExecuteCommandLists(1, cmdLists);
+        _device.WaitIdle();
+
+        // Cleanup
+        cmdList->Release();
+        allocator->Release();
+    }
+
+    private static int GetFormatBytes(Silk.NET.DXGI.Format format)
+    {
+        return format switch
+        {
+            Silk.NET.DXGI.Format.FormatR16Float => 2,
+            Silk.NET.DXGI.Format.FormatR32Float => 4,
+            Silk.NET.DXGI.Format.FormatR16G16Sint => 4,
+            Silk.NET.DXGI.Format.FormatR16G16B16A16Float => 8,
+            Silk.NET.DXGI.Format.FormatR32G32B32A32Float => 16,
+            _ => throw new NotSupportedException($"Format {format} bytes per pixel not defined")
+        };
     }
 
     internal ComPtr<ID3D12Resource> GetResource() => _resource;
+
+    /// <summary>
+    /// Gets or creates a UAV descriptor for this texture.
+    /// Always creates a fresh descriptor from the frame heap.
+    /// </summary>
+    internal GpuDescriptorHandle GetOrCreateUAVDescriptor(DX12DescriptorManager descriptorManager)
+    {
+        // Always create a fresh descriptor since the descriptor heap may be reset each frame
+        if (Depth > 1)
+        {
+            var (cpu, gpu) = descriptorManager.CreateTexture3DUAV(_resource.Get(), _dxgiFormat);
+            return gpu;
+        }
+        else
+        {
+            var (cpu, gpu) = descriptorManager.CreateTexture2DUAV(_resource.Get(), _dxgiFormat);
+            return gpu;
+        }
+    }
 
     public void Dispose()
     {
