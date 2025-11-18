@@ -103,7 +103,7 @@ public class ImageAligner
     /// Builds a multi-scale pyramid by iteratively downsampling.
     /// Corresponds to build_pyramid() in align.swift:120
     /// </summary>
-    private IComputeTexture[] BuildPyramid(
+    public IComputeTexture[] BuildPyramid(
         IComputeTexture inputTexture,
         int[] downscaleFactorList,
         double blackLevelMean,
