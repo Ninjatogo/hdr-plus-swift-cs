@@ -12,6 +12,7 @@
   <ItemGroup>
     <PackageReference Include="Silk.NET.Direct3D12" Version="2.21.0" />
     <PackageReference Include="Silk.NET.DXGI" Version="2.21.0" />
+    <PackageReference Include="Silk.NET.Vulkan" Version="2.21.0" />
     <PackageReference Include="Silk.NET.Core" Version="2.21.0" />
     <PackageReference Include="Vortice.D3DCompiler" Version="3.5.0" />
   </ItemGroup>
@@ -22,7 +23,8 @@
 
   <!-- Embed compiled shaders as resources -->
   <ItemGroup>
-    <EmbeddedResource Include="..\..\shaders\*.cso" />
+    <EmbeddedResource Include="..\..\shaders\compiled\*.cso" />
+    <EmbeddedResource Include="..\..\shaders\compiled_spirv\*.spv" />
   </ItemGroup>
 
 </Project>
