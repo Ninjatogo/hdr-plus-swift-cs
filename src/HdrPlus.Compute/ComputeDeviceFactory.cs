@@ -9,24 +9,32 @@ public static class ComputeDeviceFactory
     /// Creates the best available compute device for the current platform.
     /// Windows: DirectX 12 (native) or Vulkan
     /// Linux: Vulkan
-    /// macOS: Metal or Vulkan (via MoltenVK)
+    /// macOS: Vulkan (via MoltenVK) or Metal
     /// </summary>
     public static IComputeDevice CreateDefault()
     {
         if (OperatingSystem.IsWindows())
         {
             // Prefer DirectX 12 on Windows for best performance
-            return CreateDirectX12();
+            try
+            {
+                return CreateDirectX12();
+            }
+            catch
+            {
+                // Fall back to Vulkan if DirectX 12 is not available
+                return CreateVulkan();
+            }
         }
         else if (OperatingSystem.IsLinux())
         {
-            throw new PlatformNotSupportedException("Vulkan backend not yet implemented. Coming soon!");
-            // return CreateVulkan();
+            return CreateVulkan();
         }
         else if (OperatingSystem.IsMacOS())
         {
-            throw new PlatformNotSupportedException("Metal backend not yet implemented. Coming soon!");
-            // return CreateMetal();
+            // Use Vulkan via MoltenVK on macOS
+            return CreateVulkan();
+            // Future: CreateMetal() for native Metal support
         }
         else
         {
@@ -47,5 +55,14 @@ public static class ComputeDeviceFactory
         return new DirectX12.DX12ComputeDevice();
     }
 
-    // Future: CreateVulkan(), CreateMetal()
+    /// <summary>
+    /// Creates a Vulkan compute device (cross-platform).
+    /// Supports Windows, Linux, and macOS (via MoltenVK).
+    /// </summary>
+    public static IComputeDevice CreateVulkan()
+    {
+        return new Vulkan.VulkanComputeDevice();
+    }
+
+    // Future: CreateMetal() for native macOS Metal support
 }
