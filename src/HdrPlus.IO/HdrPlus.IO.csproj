@@ -9,14 +9,17 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- LibRaw wrapper for reading RAW/DNG files -->
-    <PackageReference Include="LibRawSharp" Version="0.1.0" Condition="'$(OS)' == 'Windows_NT'" />
+    <!-- LibRaw wrapper for reading RAW/DNG files (supports 700+ formats) -->
+    <PackageReference Include="LibRawSharp" Version="0.1.0" />
 
     <!-- TiffLibrary for writing DNG files -->
     <PackageReference Include="TiffLibrary" Version="0.8.2" />
 
     <!-- ImageSharp for general image processing -->
     <PackageReference Include="SixLabors.ImageSharp" Version="3.1.5" />
+
+    <!-- MetadataExtractor for reading EXIF/XMP metadata -->
+    <PackageReference Include="MetadataExtractor" Version="2.8.1" />
   </ItemGroup>
 
   <ItemGroup>
