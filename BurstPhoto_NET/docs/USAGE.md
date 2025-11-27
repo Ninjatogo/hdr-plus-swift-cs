@@ -35,3 +35,10 @@ This command inspects properties of the LibRaw context, useful for verifying tha
 ```bash
 dotnet run --project BurstPhoto.CLI/BurstPhoto.CLI.csproj -- debug-libraw
 ```
+
+## Running Tests
+To run the unit tests, ensure `DJI_0011.DNG` is present in the repository root (fetched from `main`).
+
+```bash
+dotnet test BurstPhoto_NET/BurstPhoto.Tests/BurstPhoto.Tests.csproj
+```
