@@ -1,0 +1,242 @@
+{
+  "format": 1,
+  "restore": {
+    "/app/BurstPhoto_NET/BurstPhoto.CLI/BurstPhoto.CLI.csproj": {}
+  },
+  "projects": {
+    "/app/BurstPhoto_NET/BurstPhoto.CLI/BurstPhoto.CLI.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "/app/BurstPhoto_NET/BurstPhoto.CLI/BurstPhoto.CLI.csproj",
+        "projectName": "BurstPhoto.CLI",
+        "projectPath": "/app/BurstPhoto_NET/BurstPhoto.CLI/BurstPhoto.CLI.csproj",
+        "packagesPath": "/home/jules/.nuget/packages/",
+        "outputPath": "/app/BurstPhoto_NET/BurstPhoto.CLI/obj/",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "/home/jules/.nuget/NuGet/NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0": {
+            "targetAlias": "net8.0",
+            "projectReferences": {
+              "/app/BurstPhoto_NET/BurstPhoto.Core/BurstPhoto.Core.csproj": {
+                "projectPath": "/app/BurstPhoto_NET/BurstPhoto.Core/BurstPhoto.Core.csproj"
+              },
+              "/app/BurstPhoto_NET/BurstPhoto.Rendering/BurstPhoto.Rendering.csproj": {
+                "projectPath": "/app/BurstPhoto_NET/BurstPhoto.Rendering/BurstPhoto.Rendering.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        },
+        "SdkAnalysisLevel": "10.0.100"
+      },
+      "frameworks": {
+        "net8.0": {
+          "targetAlias": "net8.0",
+          "dependencies": {
+            "Microsoft.Extensions.DependencyInjection": {
+              "target": "Package",
+              "version": "[10.0.0, )"
+            },
+            "Sdcb.LibRaw.runtime.linux64": {
+              "target": "Package",
+              "version": "[0.21.1, )"
+            },
+            "Sdcb.LibRaw.runtime.win64": {
+              "target": "Package",
+              "version": "[0.21.1, )"
+            },
+            "Spectre.Console": {
+              "target": "Package",
+              "version": "[0.54.0, )"
+            },
+            "Spectre.Console.Cli": {
+              "target": "Package",
+              "version": "[0.53.1, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "/home/jules/.dotnet/sdk/10.0.100/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "/app/BurstPhoto_NET/BurstPhoto.Core/BurstPhoto.Core.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "/app/BurstPhoto_NET/BurstPhoto.Core/BurstPhoto.Core.csproj",
+        "projectName": "BurstPhoto.Core",
+        "projectPath": "/app/BurstPhoto_NET/BurstPhoto.Core/BurstPhoto.Core.csproj",
+        "packagesPath": "/home/jules/.nuget/packages/",
+        "outputPath": "/app/BurstPhoto_NET/BurstPhoto.Core/obj/",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "/home/jules/.nuget/NuGet/NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0": {
+            "targetAlias": "net8.0",
+            "projectReferences": {}
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        },
+        "SdkAnalysisLevel": "10.0.100"
+      },
+      "frameworks": {
+        "net8.0": {
+          "targetAlias": "net8.0",
+          "dependencies": {
+            "Sdcb.LibRaw": {
+              "target": "Package",
+              "version": "[0.21.1.7, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "/home/jules/.dotnet/sdk/10.0.100/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "/app/BurstPhoto_NET/BurstPhoto.Rendering/BurstPhoto.Rendering.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "/app/BurstPhoto_NET/BurstPhoto.Rendering/BurstPhoto.Rendering.csproj",
+        "projectName": "BurstPhoto.Rendering",
+        "projectPath": "/app/BurstPhoto_NET/BurstPhoto.Rendering/BurstPhoto.Rendering.csproj",
+        "packagesPath": "/home/jules/.nuget/packages/",
+        "outputPath": "/app/BurstPhoto_NET/BurstPhoto.Rendering/obj/",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "/home/jules/.nuget/NuGet/NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0": {
+            "targetAlias": "net8.0",
+            "projectReferences": {
+              "/app/BurstPhoto_NET/BurstPhoto.Core/BurstPhoto.Core.csproj": {
+                "projectPath": "/app/BurstPhoto_NET/BurstPhoto.Core/BurstPhoto.Core.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        },
+        "SdkAnalysisLevel": "10.0.100"
+      },
+      "frameworks": {
+        "net8.0": {
+          "targetAlias": "net8.0",
+          "dependencies": {
+            "Silk.NET.Core": {
+              "target": "Package",
+              "version": "[2.22.0, )"
+            },
+            "Silk.NET.Maths": {
+              "target": "Package",
+              "version": "[2.22.0, )"
+            },
+            "Silk.NET.Shaderc": {
+              "target": "Package",
+              "version": "[2.22.0, )"
+            },
+            "Silk.NET.Vulkan": {
+              "target": "Package",
+              "version": "[2.22.0, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "/home/jules/.dotnet/sdk/10.0.100/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    }
+  }
+}
