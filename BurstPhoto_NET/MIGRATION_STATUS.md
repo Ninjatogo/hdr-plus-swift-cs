@@ -25,7 +25,7 @@ The primary goal is to migrate the existing **Burst Photo** application (Swift/M
 *   `BurstPhoto.Rendering`: Graphics backend (Vulkan) and shader management.
 *   `BurstPhoto.CLI`: Console application entry point.
 
-## 3. Milestones
+## 3. Detailed Milestones
 
 ### Phase 1: Foundation & Vertical Slice (Completed)
 - [x] **Project Setup:** Initialize solution and projects.
@@ -37,14 +37,33 @@ The primary goal is to migrate the existing **Burst Photo** application (Swift/M
 - [x] **Test Shader:** Added `Passthrough.hlsl` shader.
 - [x] **CLI:** Implement basic `process` command.
 
-### Phase 2: Logic Port (Next Steps)
-- [ ] **Logic Port:** Translate `denoise.swift` orchestration logic.
-- [ ] **Data Structures:** Port `ProcessingProgress`, `TileInfo`, and helpers.
+### Phase 2: Logic Port (Detailed Plan)
+Focus: Porting the orchestration logic from Swift to C#.
+- [ ] **Data Structures:**
+    - Verify `TileInfo` and `ProcessingProgress` match Swift logic.
+    - Implement `ImageCacheWrapper` equivalent (if needed).
+- [ ] **Pipeline Logic (`DenoisePipeline.cs`):**
+    - Port `perform_denoising` function from `denoise.swift`.
+    - Implement `load_images` equivalent (batch loading).
+    - Implement Reference Frame selection logic (Exposure/ISO analysis).
+    - Implement Tile Grid calculation.
+- [ ] **Integration:**
+    - Connect `LibRawLoader` to the pipeline.
+    - Ensure data flows correctly from Loader -> Logic -> (Mock) Compute.
 
-### Phase 3: Shaders & Compute
-- [ ] **Shader Translation:** Convert `align.metal`, `merge.metal`, `exposure.metal` to HLSL.
-- [ ] **Advanced Pipeline:** Implement complex dispatch logic in Vulkan.
+### Phase 3: Shaders & Compute (Detailed Plan)
+Focus: Porting Metal shaders and implementing Vulkan dispatch.
+- [ ] **Shader Translation (HLSL):**
+    - `Align.hlsl`: Port `avg_pool`, `compute_tile_differences`, `warp_texture`.
+    - `Merge.hlsl`: Port `merge_spatial`, `merge_frequency`.
+    - `Exposure.hlsl`: Port exposure correction kernels.
+- [ ] **Vulkan Pipeline Implementation:**
+    - Implement Buffer/Image allocation helpers (VMA-like or manual).
+    - Implement DescriptorSet management (layout, pool, update).
+    - Implement Command Buffer recording for each shader pass.
+    - Implement Synchronization (Barriers, Fences).
 
-### Phase 4: Refinement
-- [ ] **DNG Writing:** Investigate robust DNG writing libraries.
-- [ ] **GUI:** Evaluate Avalonia UI.
+### Phase 4: Refinement & UI
+- [ ] **DNG Writing:** Investigate `BitMiracle.LibTiff.NET` or other libraries for robust DNG output.
+- [ ] **Performance Tuning:** Optimize memory usage and dispatch sizes.
+- [ ] **GUI:** Evaluate Avalonia UI for cross-platform GUI.
