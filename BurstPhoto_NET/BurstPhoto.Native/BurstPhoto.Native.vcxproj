@@ -1,0 +1,231 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{4ABFC43E-3ED8-4D35-9083-53A103BE17FA}</ProjectGuid>
+    <RootNamespace>BurstPhotoNative</RootNamespace>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <CharacterSet>Unicode</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <CharacterSet>Unicode</CharacterSet>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros">
+    <DNG_SDK_ROOT>$(ProjectDir)..\dng_sdk_1_7_1</DNG_SDK_ROOT>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>$(ProjectDir)..\bin\$(Configuration)\$(Platform)\</OutDir>
+    <IntDir>$(ProjectDir)obj\$(Configuration)\$(Platform)\</IntDir>
+    <TargetName>BurstPhoto.Native</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>$(ProjectDir)..\bin\$(Configuration)\$(Platform)\</OutDir>
+    <IntDir>$(ProjectDir)obj\$(Configuration)\$(Platform)\</IntDir>
+    <TargetName>BurstPhoto.Native</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;_CRT_SECURE_NO_DEPRECATE;WIN32;qWinOS=1;qMacOS=0;qDNGUseXMP=0;qDNGSupportJXL=0;BURSTPHOTO_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(DNG_SDK_ROOT)\dng_sdk\source;$(DNG_SDK_ROOT)\libjpeg;$(DNG_SDK_ROOT)\libjxl\libjxl\lib\include;$(DNG_SDK_ROOT)\libjxl\client_projects\include;$(DNG_SDK_ROOT)\xmp\toolkit\third-party\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <SubSystem>Console</SubSystem>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;_CRT_SECURE_NO_DEPRECATE;WIN32;qWinOS=1;qMacOS=0;qDNGUseXMP=0;qDNGSupportJXL=0;BURSTPHOTO_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(DNG_SDK_ROOT)\dng_sdk\source;$(DNG_SDK_ROOT)\libjpeg;$(DNG_SDK_ROOT)\libjxl\libjxl\lib\include;$(DNG_SDK_ROOT)\libjxl\client_projects\include;$(DNG_SDK_ROOT)\xmp\toolkit\third-party\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <SubSystem>Console</SubSystem>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- Wrapper source -->
+  <ItemGroup>
+    <ClCompile Include="dng_sdk_wrapper.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="dng_sdk_wrapper.h" />
+  </ItemGroup>
+  <!-- libjpeg sources -->
+  <ItemGroup>
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jaricom.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jcapimin.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jcapistd.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jcarith.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jccoefct.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jccolor.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jcdctmgr.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jchuff.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jcinit.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jcmainct.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jcmarker.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jcmaster.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jcomapi.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jcparam.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jcprepct.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jcsample.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jctrans.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jdapimin.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jdapistd.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jdarith.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jdatadst.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jdatasrc.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jdcoefct.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jdcolor.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jddctmgr.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jdhuff.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jdinput.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jdmainct.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jdmarker.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jdmaster.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jdmerge.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jdpostct.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jdsample.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jdtrans.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jerror.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jfdctflt.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jfdctfst.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jfdctint.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jidctflt.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jidctfst.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jidctint.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jmemmgr.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jmemnobs.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jquant1.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jquant2.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\libjpeg\jutils.c" />
+  </ItemGroup>
+  <!-- DNG SDK sources -->
+  <ItemGroup>
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_1d_function.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_1d_table.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_abort_sniffer.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_area_task.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_bad_pixels.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_big_table.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_bottlenecks.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_camera_profile.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_color_space.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_color_spec.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_date_time.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_exceptions.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_exif.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_file_stream.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_filter_task.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_fingerprint.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_gain_map.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_globals.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_host.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_hue_sat_map.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_ifd.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_image.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_image_writer.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_info.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_iptc.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_jpeg_image.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_jpeg_memory_source.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_lens_correction.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_linearization_info.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_local_string.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_lossless_jpeg.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_lossless_jpeg_shared.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_matrix.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_memory.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_memory_stream.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_misc_opcodes.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_mosaic_info.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_mutex.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_negative.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_opcode_list.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_opcodes.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_orientation.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_parse_utils.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_pixel_buffer.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_point.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_preview.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_pthread.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_rational.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_read_image.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_rect.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_reference.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_ref_counted_block.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_render.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_resample.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_safe_arithmetic.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_shared.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_simple_image.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_spline.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_stream.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_string.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_string_list.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_tag_types.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_temperature.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_tile_iterator.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_tone_curve.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_utils.cpp" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\dng_sdk\source\dng_xy_coord.cpp" />
+    <ClCompile Include="dng_jxl_stubs.cpp" />
+  </ItemGroup>
+  <!-- zlib sources -->
+  <ItemGroup>
+    <ClCompile Include="$(DNG_SDK_ROOT)\xmp\toolkit\third-party\zlib\adler32.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\xmp\toolkit\third-party\zlib\compress.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\xmp\toolkit\third-party\zlib\crc32.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\xmp\toolkit\third-party\zlib\deflate.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\xmp\toolkit\third-party\zlib\infback.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\xmp\toolkit\third-party\zlib\inffast.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\xmp\toolkit\third-party\zlib\inflate.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\xmp\toolkit\third-party\zlib\inftrees.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\xmp\toolkit\third-party\zlib\trees.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\xmp\toolkit\third-party\zlib\uncompr.c" />
+    <ClCompile Include="$(DNG_SDK_ROOT)\xmp\toolkit\third-party\zlib\zutil.c" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

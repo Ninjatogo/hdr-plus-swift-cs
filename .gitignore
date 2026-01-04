@@ -1,5 +1,32 @@
+# --- IDEs and Editors ---
+.idea/
+.vs/
+*.sln.DotSettings.user
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+.vscode/
+
+# --- Build Artifacts ---
+[Bb]in/
+[Oo]bj/
+DerivedData/
+
+# --- Third Party Tools & SDKs ---
+BurstPhoto_NET/exiftool-13-45_x64/
+# If there are other large SDKs extracted, add them here
+
+# --- Large Assets & Output ---
+BurstPhoto_NET/Output_UserTest/
+TestResults/
+
+# --- OS Specific ---
 .DS_Store
-deprecated
-releases
-bin/
-obj/
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- Legacy ---
+deprecated/
+releases/

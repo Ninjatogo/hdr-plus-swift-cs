@@ -4,5 +4,5 @@ namespace BurstPhoto.Core.Interfaces;
 
 public interface IComputePipeline : IDisposable
 {
-    Task<RawImage> ProcessAsync(RawImage input, ProcessingProgress progress);
+    Task<RawImage> ProcessAsync(RenderingInput input, ProcessingOptions options, ProcessingProgress progress);
 }

@@ -1,5 +1,6 @@
 using BurstPhoto.Core.Interfaces;
 using BurstPhoto.Core.Models;
+using System.IO;
 using System.Text;
 
 namespace BurstPhoto.Core.Implementations;
@@ -31,5 +32,11 @@ public class SimpleRawWriter : IRawImageWriter
         }
 
         writer.Write(buffer);
+    }
+
+    public Task WriteAsync(RawImage image, string path)
+    {
+        // For now, delegate to sync version - I/O is typically fast for single images
+        return Task.Run(() => Write(path, image));
     }
 }

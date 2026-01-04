@@ -1,44 +1,56 @@
 # BurstPhoto Usage Guide
 
 ## Prerequisites
-- **.NET 8 SDK**
-- **Vulkan Drivers**: Ensure you have Vulkan drivers installed for your GPU.
-  - **Linux**: `vulkan-tools`, `mesa-vulkan-drivers` (or proprietary drivers).
-  - **Windows**: Standard GPU drivers usually include Vulkan.
-  - **macOS**: MoltenVK is required (Silk.NET often handles this, or install via Vulkan SDK).
+- **.NET 10 SDK** (or .NET 8/9 if compatible)
+- **Vulkan Drivers**:
+  - **Windows**: Standard GPU drivers.
+  - **Linux**: `vulkan-tools`, `mesa-vulkan-drivers`.
+  - **macOS**: MoltenVK.
 
 ## Building
-Navigate to the solution directory:
+Navigate to the project root:
 ```bash
 cd BurstPhoto_NET
 dotnet build
 ```
 
 ## Running the CLI
-The application is a command-line tool. You can run it using `dotnet run`.
 
-### Process an Image (Vertical Slice Verification)
-Currently, this command reads a RAW image (using LibRaw), initializes the Vulkan backend, and writes a dummy output (copy of input data) to verify the architecture.
+### 1. Process a Burst (Main Workflow)
+This command processes a sequence of DNG images, aligns them, merges them, and outputs a denoised DNG.
 
+**Syntax:**
 ```bash
-dotnet run --project BurstPhoto.CLI/BurstPhoto.CLI.csproj -- process <INPUT_RAW> <OUTPUT_PGM>
+dotnet run --project BurstPhoto.CLI -- process <INPUT_DNG_1> <INPUT_DNG_2> ... --output <OUTPUT_DNG>
 ```
 
-**Example:**
+**Example (using included samples):**
 ```bash
-dotnet run --project BurstPhoto.CLI/BurstPhoto.CLI.csproj -- process sample.dng output.pgm
+cd BurstPhoto_NET
+dotnet run --project BurstPhoto.CLI -- process "Burst Samples\DJI_20251218173647_0202_D.DNG" "Burst Samples\DJI_20251218173647_0203_D.DNG"
 ```
+*Note: The application will select a reference frame automatically.*
 
-### Debug LibRaw
-This command inspects properties of the LibRaw context, useful for verifying that `Sdcb.LibRaw` works correctly on your system.
-
+### 2. Debug LibRaw
+Inspect raw metadata for a specific file to verify the loader is working.
 ```bash
-dotnet run --project BurstPhoto.CLI/BurstPhoto.CLI.csproj -- debug-libraw
+dotnet run --project BurstPhoto.CLI -- debug-libraw "Burst Samples\DJI_20251218173647_0202_D.DNG"
 ```
 
 ## Running Tests
-To run the unit tests, ensure `DJI_0011.DNG` is present in the repository root (fetched from `main`).
 
+### Unit Tests
 ```bash
 dotnet test BurstPhoto_NET/BurstPhoto.Tests/BurstPhoto.Tests.csproj
 ```
+
+### Reference Comparison Tests
+These tests compare the output of key pipeline stages (like `LoadReference`) against known-good values.
+```bash
+dotnet test --filter "ReferenceComparisonTests"
+```
+
+## Test Data
+The repository includes sample DNGs in `BurstPhoto_NET/Burst Samples/`.
+- **Source**: DJI drone DNGs (~18MB each).
+- **Resolution**: High-res Bayer raw.
