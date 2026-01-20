@@ -3,6 +3,8 @@ using Spectre.Console;
 using BurstPhoto.Core.Interfaces;
 using BurstPhoto.Core.Models;
 using System.ComponentModel;
+using System.IO;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -50,12 +52,41 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
         [CommandOption("--bit-depth")]
         [Description("Output bit depth: Native or 16Bit (default: Native)")]
         public string BitDepth { get; set; } = "Native";
+        
+        [CommandOption("--debug-dump")]
+        [Description("Enable debug output: saves intermediate DNGs to DebugOutput folder")]
+        public bool DebugDump { get; set; } = false;
+        
+        [CommandOption("--log")]
+        [Description("Save console output to a log file (default: logs/process_YYYYMMDD_HHMMSS.log)")]
+        public bool Log { get; set; } = false;
+        
+        [CommandOption("--log-file")]
+        [Description("Custom log file path (implies --log)")]
+        public string? LogFile { get; set; } = null;
     }
 
     public override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
+        TextWriter? logWriter = null;
+        TextWriter originalOut = Console.Out;
+        
         try
         {
+            // Setup logging if requested
+            if (settings.Log || !string.IsNullOrEmpty(settings.LogFile))
+            {
+                string logPath = settings.LogFile ?? GenerateLogPath();
+                string? logDir = Path.GetDirectoryName(logPath);
+                if (!string.IsNullOrEmpty(logDir) && !Directory.Exists(logDir))
+                {
+                    Directory.CreateDirectory(logDir);
+                }
+                
+                logWriter = new StreamWriter(logPath, append: false) { AutoFlush = true };
+                Console.SetOut(new TeeTextWriter(originalOut, logWriter));
+                Console.WriteLine($"[LOG] Output being saved to: {logPath}");
+            }
             // Parse options
             var options = new ProcessingOptions
             {
@@ -66,7 +97,8 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
                 ExposureControl = ParseExposureControl(settings.ExposureControl),
                 OutputBitDepth = settings.BitDepth.Equals("16Bit", StringComparison.OrdinalIgnoreCase) 
                     ? OutputBitDepthOption.Bit16 
-                    : OutputBitDepthOption.Native
+                    : OutputBitDepthOption.Native,
+                EnableDebugDump = settings.DebugDump
             };
 
             var progress = new ProcessingProgress();
@@ -91,6 +123,21 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
             AnsiConsole.MarkupLine($"[red]Error: {Markup.Escape(ex.ToString())}[/]");
             return 1;
         }
+        finally
+        {
+            // Restore original console output and close log file
+            if (logWriter != null)
+            {
+                Console.SetOut(originalOut);
+                logWriter.Dispose();
+            }
+        }
+    }
+    
+    private static string GenerateLogPath()
+    {
+        string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        return Path.Combine("logs", $"process_{timestamp}.log");
     }
 
     private static T ParseEnum<T>(string value, string optionName) where T : struct, Enum
@@ -113,5 +160,46 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
             "curve1ev" => ExposureControlOption.Curve1EV,
             _ => throw new ArgumentException($"Invalid exposure control: {value}")
         };
+    }
+}
+
+/// <summary>
+/// TextWriter that writes to two outputs simultaneously (console and file).
+/// </summary>
+internal class TeeTextWriter : TextWriter
+{
+    private readonly TextWriter _primary;
+    private readonly TextWriter _secondary;
+
+    public TeeTextWriter(TextWriter primary, TextWriter secondary)
+    {
+        _primary = primary;
+        _secondary = secondary;
+    }
+
+    public override Encoding Encoding => _primary.Encoding;
+
+    public override void Write(char value)
+    {
+        _primary.Write(value);
+        _secondary.Write(value);
+    }
+
+    public override void Write(string? value)
+    {
+        _primary.Write(value);
+        _secondary.Write(value);
+    }
+
+    public override void WriteLine(string? value)
+    {
+        _primary.WriteLine(value);
+        _secondary.WriteLine(value);
+    }
+
+    public override void Flush()
+    {
+        _primary.Flush();
+        _secondary.Flush();
     }
 }

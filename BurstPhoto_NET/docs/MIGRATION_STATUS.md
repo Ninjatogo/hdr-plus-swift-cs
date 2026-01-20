@@ -5,8 +5,8 @@
 
 We have successfully achieved a "Vertical Slice" and have mostly completed the core engineering phases (Foundation, Logic, Compute, Raw I/O). The current focus is on **refinement**, **UI implementation**, and **comprehensive cross-platform verification**.
 
-**Current Version:** 0.8 (Alpha)
-**Date:** 2026-01-03
+**Current Version:** 0.9 (Alpha)
+**Date:** 2026-01-17
 
 ---
 
@@ -44,6 +44,8 @@ To maintain clarity, the documentation is split into focused files:
 
 ### Phase 5: Refinement & UI (Current Focus) 🚧
 - [x] **DNG Writing**: Robust implementation via native SDK.
+- [x] **Exposure-Bracketed Merge**: Implemented exposure-aware kernels for HDR bursts.
+- [x] **Tone Mapping**: Implemented `correct_exposure` and `correct_exposure_linear` kernels.
 - [ ] **Performance Tuning**: Memory management for large bursts.
 - [ ] **UI**: Replace CLI with Avalonia UI app.
 - [ ] **Linux Support**: Verify Vulkan/LibRaw on Linux.
@@ -59,20 +61,49 @@ To maintain clarity, the documentation is split into focused files:
 | **IO - Input** | 🟢 Stable | Reading Raw Bayer data successfully. |
 | **IO - Output** | 🟢 Stable | Writing valid DNGs using Adobe SDK. |
 | **Spatial Merge** | 🟢 Stable | Fixed robustness calculation bug (2026-01-03). |
-| **Noise Estimation** | 🟡 Partial | CPU-based estimation implemented; GPU version prepared. |
-| **Bracketed HDR Merge** | 🔴 Not Implemented | Exposure-weighted merge path needed. |
+| **Frequency Merge** | 🔴 Blocked | Produces black output. Root cause: missing RGBA conversion (see BACKLOG). |
+| **HDR Merge** | 🟢 Stable | Implemented exposure scaling and highlight recovery (2026-01-16). |
+| **Tone Mapping** | 🟢 Stable | Implemented Linear and Curve modes (2026-01-17). |
+| **Noise Estimation** | ⚠️ Mixed | CPU estimation stable. GPU estimation wired but bugged (outputs 0). |
+| **Debug Tools** | 🟢 New | `--debug-dump` flag to save intermediate DNGs (2026-01-19). |
 | **UI** | 🔴 Pending | Use CLI `process` command for now. |
 
 ---
 
-## 5. Recent Changes (2026-01-03)
+## 5. Recent Changes
 
-### Bug Fix: Black Output with Certain NR Settings
+### (2026-01-19) Feature: Debug Dump for Intermediate Outputs
+- **Goal**: Enable saving intermediate DNG files at pipeline stages to diagnose black output issues.
+- **Implementation**: Added `--debug-dump` CLI flag, `DebugDump()` helper in `VulkanComputePipeline.cs`.
+- **Stages Captured**: After Prepare, Forward FFT, Merge, Deconvolution, Backward FFT, Exposure Correction.
+- **Finding**: Confirmed Frequency Domain black output is caused by missing RGBA conversion step.
+
+### (2026-01-19) Bug Fix: Spatial Mode Buffer Allocation
+- **Issue**: `outHeight` was never assigned in spatial mode, causing buffer allocation failures.
+- **Fix**: Added `outHeight = height + tileSize` in `VulkanComputePipeline.cs`.
+
+### (2026-01-17) Feature: Tone Mapping Kernels
+- **Goal**: Apply final exposure correction to the merged image.
+- **Implementation**: Ported `correct_exposure` (Curve) and `correct_exposure_linear` (Linear) from Swift.
+- **Verification**: Verified via CLI with `Linear1EV` setting.
+
+### (2026-01-17) Feature: GPU Noise Estimation (Wired)
+- **Goal**: Port full GPU blur → color_difference → texture_mean pipeline from Swift.
+- **Implementation**: Created `ExecuteNoiseEstimationGPU()` with blur, diff, and reduction passes.
+- **Result**: GPU blur shader outputs zeros - bug under investigation.
+- **Workaround**: Using CPU-based `EstimateColorNoise()` which works correctly (~876 noiseSd for test images).
+- **Impact**: Processing still works; noise estimation now properly integrated into merge.
+
+### (2026-01-16) Feature: Exposure-Bracketed Merge (HDR)
+- **Problem**: Non-uniform bursts (e.g. -1, 0, +1 EV) produced artifacts because exposure differences were treated as motion.
+- **Solution**: Ported `add_texture_exposure` and `add_texture_highlights` from Swift.
+- **Implementation**: `ExecuteMerge` now detects exposure difference.
+    - **Overexposed (Brighter) Frames**: Scaled down to match reference (reduces shadow noise).
+    - **Underexposed (Darker) Frames**: Used to recover clipped highlights in the reference.
+
+### (2026-01-03) Bug Fix: Black Output with Certain NR Settings
 - **Issue**: Some NoiseReduction/MergingAlgorithm combinations produced corrupt (black) DNG files.
 - **Root Cause**: Incorrect port of robustness calculation - C# used two-parameter smoothstep, Swift uses single parameter.
 - **Fix**: Updated `MergeSpatial.hlsl` and `CalculateRobustness()` to match Swift's formula.
 
-### New: Noise Estimation
-- Added `EstimateColorNoise()` method that samples reference texture to compute noise standard deviation.
-- Passes calculated `NoiseSd` to merge shader for proper weight calculation.
 

@@ -279,7 +279,8 @@ public class DenoisePipeline : IDenoisePipeline
             SearchDistance = options.SearchDistance,
             NoiseReduction = options.NoiseReduction,
             ExposureControl = options.ExposureControl,
-            OutputBitDepth = options.OutputBitDepth
+            OutputBitDepth = options.OutputBitDepth,
+            EnableDebugDump = options.EnableDebugDump
         };
 
         // Non-Bayer sensors have restrictions

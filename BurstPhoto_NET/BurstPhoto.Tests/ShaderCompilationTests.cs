@@ -43,6 +43,8 @@ public class ShaderCompilationTests
     [InlineData("TextureOps.hlsl", "add_texture")]
     [InlineData("TextureOps.hlsl", "add_texture_weighted")]
     [InlineData("TextureOps.hlsl", "add_weight_only")]
+    [InlineData("TextureOps.hlsl", "add_texture_exposure")]
+    [InlineData("TextureOps.hlsl", "add_texture_highlights")]
     [InlineData("TextureOps.hlsl", "prepare_texture_bayer")]
     [InlineData("TextureOps.hlsl", "blur_mosaic_texture")]
     [InlineData("TextureOps.hlsl", "find_hotpixels_bayer")]

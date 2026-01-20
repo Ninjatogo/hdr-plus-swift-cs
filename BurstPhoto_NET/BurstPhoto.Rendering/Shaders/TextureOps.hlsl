@@ -209,6 +209,13 @@ void add_texture_weighted(uint3 DTid : SV_DispatchThreadID)
     OutTextureFloat[DTid.xy] = acc + val * weight;
 }
 
+// Need a second float accumulator for weights. 
+// u10 is PixelAccum (OutTextureFloat)
+// u11 is OutTextureUint (uint) -> cannot use.
+// u12 is OutTextureRGBA (float4) -> cannot use.
+// Let's add u13
+RWTexture2D<float> OutWeightAccum : register(u13);
+
 [numthreads(16, 16, 1)]
 void add_weight_only(uint3 DTid : SV_DispatchThreadID)
 {
@@ -216,6 +223,79 @@ void add_weight_only(uint3 DTid : SV_DispatchThreadID)
     float weight = AuxTextureFloat.Load(int3(DTid.xy, 0));
     float acc = OutTextureFloat[DTid.xy];
     OutTextureFloat[DTid.xy] = acc + weight;
+}
+
+[numthreads(16, 16, 1)]
+void add_texture_exposure(uint3 DTid : SV_DispatchThreadID)
+{
+    // t0=Input (Warped Frame), t3=Weight, u10=PixelAccumulator
+    // Params: ScaleFactor, WhiteLevel, BlackLevel, BlackLevelMean
+    
+    // Original Logic (Swift):
+    // float factor = params.scale_factor;
+    // float white_level = params.white_level;
+    // float black_level = params.black_level;
+    // ...
+    // pixel_value = (pixel_value - black_level) * factor + black_level;
+    // pixel_value = min(pixel_value, white_level);
+    // pixel_value = max(pixel_value, black_level_mean);
+    // out_texture += pixel_value * weight;
+    
+    float val = InTextureFloat.Load(int3(DTid.xy, 0));
+    float weight = AuxTextureFloat.Load(int3(DTid.xy, 0));
+    float acc = OutTextureFloat[DTid.xy];
+    
+    // Scale value based on exposure difference
+    val = (val - BlackLevel) * ScaleFactor + BlackLevel;
+    
+    // Clamp to valid range (clipping highlights)
+    val = min(val, WhiteLevel);
+    val = max(val, BlackLevelMean);
+    
+    OutTextureFloat[DTid.xy] = acc + val * weight;
+}
+
+float calculate_weight_highlights(float val, float white_level, float black_level)
+{
+    // Swift:
+    // float weight_highlights = pow(max(pixel_value - black_level, 0.0) / (white_level - black_level), 4.0);
+    // weight_highlights = smoothstep(0.7, 0.9, weight_highlights);
+    
+    float normalized = max(val - black_level, 0.0f) / max(white_level - black_level, 1e-6f);
+    float w = pow(normalized, 4.0f);
+    
+    // HLSL smoothstep(min, max, x)
+    return smoothstep(0.7f, 0.9f, w);
+}
+
+[numthreads(16, 16, 1)]
+void add_texture_highlights(uint3 DTid : SV_DispatchThreadID)
+{
+    // t0=Input (Warped Frame)
+    // t3=Weight (Alignment Weight)
+    // u10=PixelAccumulator (RW)
+    // u13=WeightAccumulator (RW) - NEW BINDING
+    
+    float val = InTextureFloat.Load(int3(DTid.xy, 0));       
+    float weight = AuxTextureFloat.Load(int3(DTid.xy, 0));   
+    
+    // Scale the dark pixel up to match reference exposure
+    float scaledVal = (val - BlackLevel) * ScaleFactor + BlackLevel;
+    
+    // Calculate highlight weight based on the SCALED value
+    float w_h = calculate_weight_highlights(scaledVal, WhiteLevel, BlackLevel);
+    
+    // Combine alignment weight and highlight weight
+    float finalWeight = weight * w_h;
+    
+    if (finalWeight > 0)
+    {
+         float pAcc = OutTextureFloat[DTid.xy];
+         OutTextureFloat[DTid.xy] = pAcc + scaledVal * finalWeight;
+         
+         float wAcc = OutWeightAccum[DTid.xy];
+         OutWeightAccum[DTid.xy] = wAcc + finalWeight;
+    }
 }
 
 

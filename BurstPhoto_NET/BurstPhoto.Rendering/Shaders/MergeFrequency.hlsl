@@ -21,7 +21,7 @@ cbuffer FrequencyParams : register(b0)
     int NumTextures; 
     float ExposureFactor;
     float WhiteLevel;
-    float BlackLevelMean; // Used as WhiteLevel/BlackLevel
+    float BlackLevelMean; 
     float MeanMismatch;
 };
 
@@ -29,15 +29,17 @@ cbuffer FrequencyParams : register(b0)
 // Resources
 // -------------------------------------------------------------------------
 
+// CRITICAL FIX: Register assignments must match C# Vulkan descriptor bindings
+// C# binds: Binding 0 = UBO, Binding 1-5 = Textures, Binding 10 = Output
 // Primary Inputs
-Texture2D<float4> RefTexture     : register(t0); // Base Frame or Input
-Texture2D<float4> AlignedTexture : register(t1); // Floating Frame or Aux
-Texture2D<float4> AuxTexture0    : register(t2); // RMS / Diff / Mismatch
-Texture2D<float4> AuxTexture1    : register(t3); // Mismatch / Highlights
-Texture2D<float4> AuxTexture2    : register(t4); // Highlights
+Texture2D<float4> RefTexture     : register(t1); // Binding 1
+Texture2D<float4> AlignedTexture : register(t2); // Binding 2
+Texture2D<float4> AuxTexture0    : register(t3); // Binding 3 (RMS)
+Texture2D<float4> AuxTexture1    : register(t4); // Binding 4 (Mismatch)
+Texture2D<float4> AuxTexture2    : register(t5); // Binding 5 (Highlights)
 
 // Outputs
-RWTexture2D<float4> OutputTexture : register(u0); // Main Output / Accumulator
+RWTexture2D<float4> OutputTexture : register(u10); // Binding 10
 
 // -------------------------------------------------------------------------
 // Helpers
@@ -187,7 +189,7 @@ void backward_fft(uint3 DTid : SV_DispatchThreadID)
             coefRe = cos(angle*2*dm); coefIm = sin(angle*2*dm);
             Re00 = Re0 + coefRe*Re1 - coefIm*Im1; Im00 = Im0 + coefIm*Re1 + coefRe*Im1;
             Re22 = Re2 + coefRe*Re3 - coefIm*Im3; Im22 = Im2 + coefIm*Re3 + coefRe*Im3;
-            coefRe = cos(angle*2*(dm+sz14)); coefIm = sin(angle*2*(dn+sz14)); // BUG: dn->dm for backward? wait. cos(angle*2*(dm+...)). Metal line 533-535.
+            coefRe = cos(angle*2*(dm+sz14)); coefIm = sin(angle*2*(dm+sz14)); // Corrected dn->dm
             // Check Metal: `coefRe = cos(angle*2*(dm+tile_size_14));`. Correct. Copy paste err.
             Re11 = Re0 + coefRe*Re1 - coefIm*Im1; Im11 = Im0 + coefIm*Re1 + coefRe*Im1;
             Re33 = Re2 + coefRe*Re3 - coefIm*Im3; Im33 = Im2 + coefIm*Re3 + coefRe*Im3;
@@ -392,8 +394,8 @@ void merge_frequency_domain(uint3 DTid : SV_DispatchThreadID)
             int m = 2*(m0 + dm);
             int n = n0 + dn;
             
-            refRe = OutputTexture[int2(m+0, n)]; // Assuming Ref is in OutputTexture accumulator
-            refIm = OutputTexture[int2(m+1, n)];
+            refRe = RefTexture.Load(int3(m+0, n, 0)); 
+            refIm = RefTexture.Load(int3(m+1, n, 0));
             algRe = AlignedTexture.Load(int3(m+0, n, 0)); // Aligned is Texture
             algIm = AlignedTexture.Load(int3(m+1, n, 0));
             
@@ -431,8 +433,8 @@ void merge_frequency_domain(uint3 DTid : SV_DispatchThreadID)
             int m = 2*(m0 + dm);
             int n = n0 + dn;
             
-            refRe = OutputTexture[int2(m+0, n)]; 
-            refIm = OutputTexture[int2(m+1, n)];
+            refRe = RefTexture.Load(int3(m+0, n, 0)); 
+            refIm = RefTexture.Load(int3(m+1, n, 0));
             algRe = AlignedTexture.Load(int3(m+0, n, 0)); 
             algIm = AlignedTexture.Load(int3(m+1, n, 0));
             

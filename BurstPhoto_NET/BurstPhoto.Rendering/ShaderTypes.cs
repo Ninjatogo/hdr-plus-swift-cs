@@ -56,6 +56,7 @@ public struct ExposureParams
     public int Padding0;
     public int Padding1;
     public int Padding2;
+    public int Padding3; // Added extra padding for alignment safety if needed
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -104,3 +105,22 @@ public struct SpatialParams
     public float NoiseSd;      // Noise standard deviation
 }
 
+[StructLayout(LayoutKind.Sequential)]
+public struct FrequencyParams
+{
+    public float RobustnessNorm;
+    public float ReadNoise;
+    public float MaxMotionNorm;
+    public int TileSize;
+    public int UniformExposure;
+    
+    // Additional params
+    public int NumTextures; 
+    public float ExposureFactor;
+    public float WhiteLevel;
+    public float BlackLevelMean; 
+    public float MeanMismatch;
+    
+    public int Padding0;
+    public int Padding1;
+}

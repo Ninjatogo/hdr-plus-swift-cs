@@ -71,6 +71,11 @@ public class ProcessingOptions
     public double NoiseReduction { get; set; } = 13.0;
     public ExposureControlOption ExposureControl { get; set; } = ExposureControlOption.LinearFullRange;
     public OutputBitDepthOption OutputBitDepth { get; set; } = OutputBitDepthOption.Native;
+    
+    /// <summary>
+    /// Enable debug output: saves intermediate DNGs to DebugOutput folder.
+    /// </summary>
+    public bool EnableDebugDump { get; set; } = false;
 
     /// <summary>
     /// Gets the tile size in pixels for the given option.
