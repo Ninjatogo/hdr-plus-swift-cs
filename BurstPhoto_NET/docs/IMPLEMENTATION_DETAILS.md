@@ -166,10 +166,31 @@ The "Higher Quality" merge algorithm (Frequency Domain) produces **black output*
 The dramatic size reduction (16MB → 1.6MB) confirms the FFT pipeline outputs mostly zeros.
 
 **Confirmed Root Cause:**
-**Missing RGBA Conversion** - Swift's `convert_to_rgba()` converts single-channel Bayer to RGBA superpixels before FFT. Our code passes R32Sfloat textures directly, meaning the FFT shader processes incorrect/incomplete data.
+**Incorrect RGBA Conversion Logic** - The `convert_to_rgba` and `convert_to_bayer` shaders were demosaicing (averaging green channels and using CFA patterns) instead of directly packing raw Bayer values.
 
-**Required Fix:**
-Port `convert_to_rgba` (before FFT) and `convert_to_bayer` (after backward FFT) shaders from Swift reference: `texture/texture.swift`.
+**Shader Logic Fix (2026-01-19):**
+- **Problem**: Original shaders averaged green channels (e.g., `g = (p1+p2)*0.5f` for RGGB)
+- **Solution**: Changed to direct packing without demosaicing:
+  ```hlsl
+  // convert_to_rgba: Direct pack 2x2 Bayer → RGBA
+  OutTextureRGBA[gid] = float4(p0, p1, p2, p3);
+
+  // convert_to_bayer: Simple positional unpack RGBA → 2x2 Bayer
+  if (x == 0 && y == 0) val = rgba.r;      // Top-left
+  else if (x == 1 && y == 0) val = rgba.g; // Top-right
+  else if (x == 0 && y == 1) val = rgba.b; // Bottom-left
+  else if (x == 1 && y == 1) val = rgba.a; // Bottom-right
+  ```
+- **Files**: `BurstPhoto.Rendering/Shaders/TextureOps.hlsl` (lines 89-127)
+- **Status**: Logic matches Swift exactly, but **runtime execution produces zeros**
+
+**Active Debugging (2026-01-19):**
+Despite correct shader logic, `ExecuteConvertToRgba()` produces all-zero output:
+- Input (`preparedTexture`): Valid 16MB data ✅
+- RGBA output: All zeros after shader execution ❌
+- Shader compilation: No errors ✅
+- Possible causes: Vulkan descriptor binding, memory barriers, or image layout issues
+- Location: `VulkanComputePipeline.cs:1246-1293`
 
 ### GPU Noise Estimation
 The GPU blur shader has an issue outputting zeros. CPU estimation is used as a reliable fallback.
