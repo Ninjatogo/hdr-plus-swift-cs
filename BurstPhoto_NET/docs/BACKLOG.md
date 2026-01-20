@@ -17,114 +17,164 @@
 ## Missing Features
 
 ### 1. Frequency Domain Merging (Higher Quality)
-- **Status**: Black Output Confirmed (2026-01-19).
-- **Goal**: Implement FFT/DFT based alignment and merging.
+- **Status**: Partially Working - Iteration 1 Prepare & RGBA Work, FFT Broken (2026-01-20 Evening)
+- **Goal**: Implement FFT/DFT based alignment and merging with 4-iteration artifact reduction.
 
-#### Work Done (2026-01-17/18):
-- Ported `forward_fft`, `backward_fft`, `merge_frequency_domain`, `deconvolute_frequency_domain`, `reduce_artifacts_tile_border` kernels to `MergeFrequency.hlsl`.
-- Implemented `EnsureMergeFrequencyPipeline`, `ExecuteMergeFrequency`, `ExecuteForwardFft`, `ExecuteBackwardFft`, `ExecuteCopyImage`, `ExecuteDeconvoluteFrequency`, `ExecuteReduceArtifacts` in `VulkanComputePipeline.cs`.
+#### Session Summary (2026-01-20 Evening):
 
-#### Fixes Applied (2026-01-18):
-| Fix | Description |
-|-----|-------------|
-| Texture Dimensions | `texRms`, `texMismatch`, `texHighlights` now allocated at tile-grid size (nTilesX × nTilesY) |
-| Tile Size | Hardcoded `tile_size_merge = 8` for FFT (matching Swift) |
-| HLSL Registers | Changed to `register(t1-t5, u10)` to match C# Vulkan bindings |
-| Robustness Formula | Ported Swift's formula: `robustness_rev = 0.5 * (26.5 or 28.5 - noise_reduction)` |
-| FFT Tile Sizes | Fixed forward/backward FFT to use `tile_size_merge` instead of alignment `tileSize` |
-| Deconvolution | Added `ExecuteDeconvoluteFrequency()` dispatch (was compiled but never called) |
-| Tile Border Reduction | Added `ExecuteReduceArtifacts()` dispatch (was compiled but never called) |
+**Goal**: Fix Forward FFT zero output issue
+**Result**: FFT issue persists despite extensive debugging. Prepare/RGBA remain working for iteration 1.
 
-#### Confirmed via Debug Testing (2026-01-19):
-- **Debug Dump Feature**: Implemented `--debug-dump` CLI flag to save intermediate DNGs ✅
-- **Observation**: `step_1_prepare.dng` is 16MB (valid), but `step_5_back_fft.dng` is only 1.6MB (black/zeros)
-- **Conclusion**: Data is lost during FFT processing, not before or after
+#### Critical Fixes Applied (2026-01-20):
 
-#### Confirmed Root Cause:
-**Incorrect RGBA Conversion Logic** - The `convert_to_rgba` shader was demosaicing (averaging green channels) instead of directly packing raw Bayer values. Swift's `convert_to_rgba()` packs 4 adjacent Bayer pixels into RGBA channels without any averaging or interpolation.
+| Fix | Description | Status |
+|-----|-------------|--------|
+| **HLSL Vulkan Bindings** | Added explicit `[[vk::binding(N, 0)]]` attributes to ALL shaders to fix register-to-binding mapping | ✅ Fixed |
+| **ExecutePrepare Bindings** | Fixed descriptor bindings: input at Binding 2 (t1), weight at Binding 4 (t3), black levels at Binding 6 (t5) | ✅ Fixed |
+| **ExecutePrepare Layout** | Fixed descriptor layout: Binding 4 as SampledImage (not StorageBuffer), added Binding 6 for BlackLevels | ✅ Fixed |
+| **ExecutePrepare Dispatch** | Changed from output dimensions to input dimensions (matching Metal's dispatch pattern) | ✅ Fixed |
+| **prepare_texture_bayer Shader** | Completely rewrote to match Metal: read from gid, write to gid+padding (VulkanComputePipeline.cs:2330, TextureOps.hlsl:370-414) | ✅ Fixed |
+| **FFT Array Sizes** | Fixed tmp_data[64→16], tmp_tile[80] to match Metal (MergeFrequency.hlsl:73-74) | ✅ Fixed |
+| **FFT Bounds Checking** | Added bounds checks to forward_fft, backward_fft, deconvolute_frequency_domain, merge_frequency_domain | ✅ Added (Note: bounds check temporarily removed during debugging) |
+| **Frequency Layout Comments** | Clarified descriptor layout comments to match actual shader bindings (t1→Binding1, etc.) | ✅ Fixed |
 
-#### Shader Fixes Applied (2026-01-19):
-| Fix | Description |
-|-----|-------------|
-| `convert_to_rgba` | Removed CFA pattern logic and green channel averaging. Changed to direct packing: `float4(p0, p1, p2, p3)` |
-| `convert_to_bayer` | Removed CFA pattern logic. Changed to simple positional unpacking based on (x,y) % 2 |
+#### Files Modified (2026-01-20):
+- `TextureOps.hlsl`: Added `[[vk::binding]]` attributes, rewrote `prepare_texture_bayer`
+- `Align.hlsl`: Added `[[vk::binding]]` attributes
+- `MergeSpatial.hlsl`: Added `[[vk::binding]]` attributes
+- `MergeFrequency.hlsl`: Added `[[vk::binding]]` attributes, fixed FFT array sizes, added bounds checks (later removed for debugging)
+- `Exposure.hlsl`: Added `[[vk::binding]]` attributes
+- `VulkanComputePipeline.cs`: Fixed ExecutePrepare bindings/layout/dispatch; clarified frequency layout comments
 
-**Result**: Shaders now correctly match Swift's implementation, but runtime execution produces zeros (see Active Issues below).
+#### Test Results (2026-01-20 Evening):
+```
+Iteration 1:
+✅ Raw input data: sum=133507466, mean=13350.75
+✅ After prepare: sum=5158260, mean=5158.26
+✅ After convert_to_rgba: sum=7250654, mean=725.07
+❌ After forward_fft: sum=0.00, mean=0.00
+
+Iterations 2-4:
+❌ After prepare: sum=0.00, mean=0.00
+```
+
+**Progress**: Prepare and RGBA conversion confirmed working for Iteration 1!
+
+#### Remaining Issues (BLOCKERS):
+
+1. **Forward FFT Producing Zeros** (HIGH PRIORITY - BLOCKER):
+   - **Input**: Valid RGBA data (sum=7,250,654)
+   - **Output**: All zeros (sum=0.00)
+   - **Debugging Attempted**:
+     - ✅ Verified descriptor bindings correct (RefTexture at Binding 1, OutputTexture at Binding 10)
+     - ✅ Verified shader compiles without errors
+     - ✅ Verified dispatch dimensions correct (17×13 groups = 258×194 threads)
+     - ✅ Verified layout transitions correct (both textures in ImageLayout.General)
+     - ✅ Verified synchronization (QueueWaitIdle between commands)
+     - ❌ Even simple pixel copy from input→output produces zeros
+     - ❌ Test pattern writes (float4(999, 888, 777, 666)) produce zeros
+   - **Suspected Causes**:
+     - Shader not executing properly (despite no Vulkan errors)
+     - Descriptor binding mismatch not yet identified
+     - Pipeline state issue
+     - Unknown Vulkan issue
+   - **Location**: `forward_fft` entry point → `forward_fft_impl` in MergeFrequency.hlsl:61-150
+   - **Note**: ExecuteForwardFft bindings look correct per code inspection
+
+2. **Iterations 2-4 Prepare Failure** (HIGH PRIORITY - BLOCKER):
+   - Iteration 1 prepare works, iterations 2-4 produce zeros
+   - Likely cause: Texture re-upload or padding parameter issues
+   - Different spatial shifts per iteration may expose bugs
+   - Location: VulkanComputePipeline.cs:357-358
+
+#### Historical Work:
+
+**Fixes Applied (2026-01-18)**:
+- Texture dimensions for RMS, mismatch, highlights (nTilesX × nTilesY)
+- Hardcoded `tile_size_merge = 8` for FFT
+- HLSL registers changed to `register(t1-t5, u10)`
+- Robustness formula ported from Swift
+- FFT tile sizes fixed
+
+**4-Iteration Framework (2026-01-20)**:
+- ✅ Framework complete (4 iterations × 6 comparisons = 24 total)
+- ✅ No crashes, descriptor exhaustion, or Vulkan errors
+- ✅ Processing time: ~14 seconds
+- ✅ Descriptor pool increased to 500 sets
+
+**Debug Infrastructure**:
+- ✅ `--debug-dump` CLI flag implemented
+- ✅ Intermediate DNG saving (step_1_prepare, step_6_exposure, etc.)
+- ✅ Granular debug logging after each pipeline stage
 
 #### Next Steps:
-1. ~~Implement texture dump debugging~~ ✅ Done (2026-01-19)
-2. ~~Port `convert_to_rgba` and `convert_to_bayer` shaders~~ ✅ Logic Fixed (2026-01-19)
-3. **DEBUG: Investigate why RGBA conversion produces zeros at runtime** - CRITICAL
-4. Verify FFT output matches Swift reference once conversion works
+1. **DEBUG: Fix Forward FFT zero output** - BLOCKER
+   - Investigate why even simple writes to OutputTexture produce zeros
+   - Consider using Vulkan validation layers to catch errors
+   - Check if there's a pipeline state or shader module issue
+   - Verify SPIR-V bytecode is valid
+   - Try using RenderDoc or similar to inspect actual Vulkan state
+2. **DEBUG: Fix prepare stage for iterations 2-4** - BLOCKER
+   - Debug texture re-upload logic
+   - Verify padding parameters for different spatial shifts
+3. Verify backward FFT implementation
+4. Verify deconvolution implementation
+5. Compare shader implementations line-by-line against Swift reference
 
-### 1b. RGBA Conversion for Frequency Domain (Deferred)
-- **Status**: Pending (Deferred to future task).
-- **Goal**: Port `convert_to_rgba` and `convert_to_bayer` shaders from Swift.
-- **Priority**: High - likely root cause of current 11% output size issue.
-- **Details**:
-    - Swift converts single-channel Bayer image to RGBA format before FFT processing.
-    - The FFT shaders expect `float4` data (RGBA channels processed in parallel via SIMD).
-    - Currently, we pass `R32Sfloat` (single-channel) textures (though allocated as `R32G32B32A32Sfloat`).
-    - This causes data loss: only 1/4 of pixels are being processed correctly.
-- **Swift Reference**: `texture/texture.swift` → `convert_to_rgba()`, `convert_to_bayer()`.
-
+**📖 See [TROUBLESHOOTING_FREQUENCY_DOMAIN.md](TROUBLESHOOTING_FREQUENCY_DOMAIN.md) for detailed debugging strategy.**
 
 ### 2. Full Exposure Control (Tone Mapping)
-### 2. Full Exposure Control (Tone Mapping)
-- **Status**: Implemented (2026-01-17).
+- **Status**: ✅ Implemented (2026-01-17)
 - **Goal**: Implement linear and non-linear tone mapping shaders.
-- **Details**:
-    - Ported `correct_exposure` and `correct_exposure_linear` kernels.
-    - Fully integrated into `VulkanComputePipeline` and verified via CLI.
+- **Details**: Ported `correct_exposure` and `correct_exposure_linear` kernels, fully integrated.
 
 ### 3. Temporal Averaging (Noise Reduction Max)
-- **Status**: Pending.
-- **Goal**: Implement `calculate_temporal_average` for static scenes (Noise Reduction = 23).
-- **Details**: Simple averaging without alignment.
+- **Status**: Pending
+- **Goal**: Implement `calculate_temporal_average` for static scenes (Noise Reduction = 23)
+- **Details**: Simple averaging without alignment
 
 ### 4. GPU-Based Noise Estimation
-### 4. GPU-Based Noise Estimation
-- **Status**: Wired / Bugged.
-- **Goal**: Port Swift's full GPU blur → color_difference → texture_mean pipeline.
+- **Status**: Wired / Bugged
+- **Goal**: Port Swift's full GPU blur → color_difference → texture_mean pipeline
 - **Details**:
-    - Fully wired in `VulkanComputePipeline.cs` (`ExecuteNoiseEstimationGPU`).
-    - **Known Bug**: `blur_mosaic_texture` shader writes all zeros despite correct params.
-    - Currently using CPU fallback (stable).
+  - Fully wired in `VulkanComputePipeline.cs` (`ExecuteNoiseEstimationGPU`)
+  - **Known Bug**: `blur_mosaic_texture` shader writes all zeros despite correct params
+  - Currently using CPU fallback (stable)
 
 ## Known Issues
 
 ### Resolved
 | Issue | Resolution |
 |-------|------------|
-| DNG Write Overflow | Fixed by switching to Adobe DNG SDK native wrapper. |
-| CFA Pattern Order | Fixed via granular try-catch in `ExtractExifMetadata`. |
-| GCHandle Dispose | Fixed via try-catch/Recycle loop in `LibRawLoader`. |
-| **Black Output Bug** | Fixed incorrect robustness calculation in `MergeSpatial.hlsl`. |
-| **Black Output Bug** | Fixed incorrect robustness calculation in `MergeSpatial.hlsl`. |
-| **HDR Merge** | Implemented exposure-bracketed merge kernels (`add_texture_exposure`, `highlights`). |
-| **Tone Mapping** | Implemented `correct_exposure` and `correct_exposure_linear` kernels. |
-
+| DNG Write Overflow | Fixed by switching to Adobe DNG SDK native wrapper |
+| CFA Pattern Order | Fixed via granular try-catch in `ExtractExifMetadata` |
+| GCHandle Dispose | Fixed via try-catch/Recycle loop in `LibRawLoader` |
+| **Black Output Bug** | Fixed incorrect robustness calculation in `MergeSpatial.hlsl` |
+| **HDR Merge** | Implemented exposure-bracketed merge kernels |
+| **Tone Mapping** | Implemented `correct_exposure` kernels |
+| **HLSL-Vulkan Binding Mismatch** | Fixed by adding explicit `[[vk::binding]]` attributes to all shaders (2026-01-20) |
+| **Prepare Stage Iteration 1** | Fixed dispatch dimensions, descriptor bindings, and shader logic (2026-01-20) |
+| **RGBA Conversion Iteration 1** | Fixed by correcting prepare stage (2026-01-20) |
 
 ### Active / To Watch
-- **NuGet Warnings**: We see `NU1701` for the C++/CLI wrapper on .NET Core. This is safe to ignore but should be suppressed in csproj.
-- **RGBA Conversion Produces Zeros (2026-01-19)**:
-  - **Symptom**: `ExecuteConvertToRgba()` produces all-zero output despite correct shader logic and valid input
-  - **Evidence**: `step_1_prepare.dng` is 16MB (valid), but `RGBA sum (first 1000): 0.00` after conversion
-  - **Shader Code**: Verified correct - matches Swift implementation exactly
-  - **Compilation**: No errors - shader compiles successfully
-  - **Possible Causes**:
-    - Vulkan descriptor binding issue (wrong binding slots or types)
-    - Memory barrier/synchronization issue (input texture not ready)
-    - Image layout transition issue (texture in wrong layout for reading)
-    - Descriptor set update issue (bindings not properly updated)
-  - **Location**: `VulkanComputePipeline.cs:1246-1293` (`ExecuteConvertToRgba`)
-  - **Priority**: CRITICAL - blocks Frequency Domain merge entirely
+- **NuGet Warnings**: `NU1701` for C++/CLI wrapper on .NET Core (safe to ignore, should suppress in csproj)
+- **Forward FFT Zero Output (2026-01-20)**:
+  - **Symptom**: FFT shader produces all-zero output despite valid RGBA input. Even simple test writes produce zeros.
+  - **Impact**: Blocks entire frequency domain merge pipeline
+  - **Status**: Extensive debugging performed, root cause not yet identified
+  - **Priority**: CRITICAL BLOCKER
+  - **Debugging Notes**: Descriptor bindings verified, shader compiles, dispatch dimensions correct, layouts correct, synchronization in place. Issue appears fundamental to shader execution or texture access.
+- **Iterations 2-4 Prepare Failure (2026-01-20)**:
+  - **Symptom**: Prepare stage works for iteration 1, fails for 2-4
+  - **Impact**: Only 1 of 4 iterations produces valid data
+  - **Status**: Under investigation (blocked by FFT issue)
+  - **Priority**: HIGH
 
 ## Items Needing Verification
 
 | Item | Status | Notes |
 |------|--------|-------|
-| **Tile grid calculation** | ⚠️ Unverified | Formula implemented, needs comparison against Swift output. |
-| **X-Trans Support** | ⚠️ Unverified | Code implemented, but no Fujifilm test files available. |
-| **Memory Usage** | ⚠️ Unknown | Not tested with large bursts (>10 images). |
-| **Output Quality** | ⚠️ Partial | Visual check is okay, need distinct numerical comparison with Swift ref. |
+| **Tile grid calculation** | ⚠️ Unverified | Formula implemented, needs comparison against Swift output |
+| **X-Trans Support** | ⚠️ Unverified | Code implemented, no Fujifilm test files available |
+| **Memory Usage** | ⚠️ Unknown | Not tested with large bursts (>10 images) |
+| **Output Quality** | ⚠️ Partial | Visual check okay, need numerical comparison with Swift |

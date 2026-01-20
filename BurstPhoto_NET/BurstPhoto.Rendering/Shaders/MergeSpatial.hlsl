@@ -9,6 +9,7 @@
 // Constant Buffers
 // -------------------------------------------------------------------------
 
+[[vk::binding(0, 0)]]
 cbuffer SpatialParams : register(b0)
 {
     float WhiteLevel;
@@ -20,13 +21,23 @@ cbuffer SpatialParams : register(b0)
 // -------------------------------------------------------------------------
 // Resources
 // -------------------------------------------------------------------------
+// NOTE: Using explicit [[vk::binding]] attributes to match C# descriptor layout.
+// C# binds resources at: Binding 0 (b0), Binding 1 (t0), Binding 2 (t1), Binding 3 (t2), Binding 10 (u10).
 
-Texture2D<float> RefTexture : register(t0); 
+[[vk::binding(1, 0)]]
+Texture2D<float> RefTexture : register(t0);
+
+[[vk::binding(2, 0)]]
 Texture2D<float> CompTexture : register(t1);
+
+[[vk::binding(3, 0)]]
 Texture2D<float> InDiff : register(t2); // Input for compute_merge_weight
 
-// u0 -> u10 to avoid collision with t0
+// Storage images
+[[vk::binding(10, 0)]]
 RWTexture2D<float> OutDiff : register(u10);   // color_difference output
+
+[[vk::binding(10, 0)]]
 RWTexture2D<float> OutWeight : register(u10); // compute_merge_weight output
 
 // -------------------------------------------------------------------------

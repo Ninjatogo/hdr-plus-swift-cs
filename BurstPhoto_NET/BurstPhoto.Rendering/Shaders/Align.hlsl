@@ -9,6 +9,7 @@
 // Constant Buffers
 // -------------------------------------------------------------------------
 
+[[vk::binding(0, 0)]]
 cbuffer AlignParams : register(b0)
 {
     // avg_pool params
@@ -17,18 +18,18 @@ cbuffer AlignParams : register(b0)
     float FactorRed;
     float FactorGreen;
     float FactorBlue;
-    
+
     // compute_tile_differences params
     int DownscaleFactor;
     int TileSize;
     int SearchDist;
     int WeightSSD;
-    
+
     // warp params
     int HalfTileSize;
     int NumTilesX;
     int NumTilesY;
-    
+
     // correct_upsampling_error params
     int UniformExposure;
 };
@@ -36,30 +37,39 @@ cbuffer AlignParams : register(b0)
 // -------------------------------------------------------------------------
 // Resources
 // -------------------------------------------------------------------------
+// NOTE: Using explicit [[vk::binding]] attributes to match C# descriptor layout.
+// C# binds resources at: Binding 0 (b0), Binding 1 (t0), Binding 2 (t1), Binding 3 (t2), Binding 10 (u10).
 
-// t0
+// t0 -> Binding 1
+[[vk::binding(1, 0)]]
 Texture2D<float> InTexture : register(t0); // avg_pool, warp
+
+[[vk::binding(1, 0)]]
 Texture2D<float> RefTexture : register(t0); // compute_tile_diff, correct_upsample, find_best_tile (read tile_diff as t0?)
 
-// t1
+[[vk::binding(1, 0)]]
+Texture3D<float> InTileDiff : register(t0); // find_best_tile_alignment (TileDiff is 3D input)
+
+// t1 -> Binding 2
+[[vk::binding(2, 0)]]
 Texture2D<float> CompTexture : register(t1);
 
-// t2
-Texture2D<int4> PrevAlignment : register(t2); 
+// t2 -> Binding 3
+[[vk::binding(3, 0)]]
+Texture2D<int4> PrevAlignment : register(t2);
 
-// t0 for find_best_tile_alignment (TileDiff is 3D input)
-Texture3D<float> InTileDiff : register(t0);
-
-// u0
-// u0 -> u10 to avoid collision with t0
+// u10 -> Binding 10
+[[vk::binding(10, 0)]]
 RWTexture2D<float> OutTexture : register(u10); // avg_pool, warp
+
+[[vk::binding(10, 0)]]
 RWTexture3D<float> TileDiff : register(u10);   // compute_tile_differences
 
-// Output for find_best_tile_alignment
-RWTexture2D<int4> OutAlignment : register(u10); 
+[[vk::binding(10, 0)]]
+RWTexture2D<int4> OutAlignment : register(u10); // find_best_tile_alignment
 
-// Output for correct_upsampling_error
-RWTexture2D<int4> PrevAlignmentCorrected : register(u10);
+[[vk::binding(10, 0)]]
+RWTexture2D<int4> PrevAlignmentCorrected : register(u10); // correct_upsampling_error
 
 // -------------------------------------------------------------------------
 // Kernels
