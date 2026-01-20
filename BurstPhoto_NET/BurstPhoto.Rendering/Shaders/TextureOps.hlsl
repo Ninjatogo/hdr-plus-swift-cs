@@ -90,26 +90,18 @@ void crop_texture(uint3 DTid : SV_DispatchThreadID)
 void convert_to_rgba(uint3 DTid : SV_DispatchThreadID)
 {
     uint2 gid = DTid.xy;
-    uint2 inPos = gid * 2; 
+    uint2 inPos = gid * 2;
 
+    // Direct pack: Read 4 adjacent Bayer pixels into RGBA channels
+    // No averaging, no demosaicing - just pack the raw values
     float p0 = InTextureFloat.Load(int3(inPos.x,   inPos.y,   0));
     float p1 = InTextureFloat.Load(int3(inPos.x+1, inPos.y,   0));
     float p2 = InTextureFloat.Load(int3(inPos.x,   inPos.y+1, 0));
     float p3 = InTextureFloat.Load(int3(inPos.x+1, inPos.y+1, 0));
-     
-    float r=0, g=0, b=0;
-    
-    if (CfaPattern == 0) { // RGGB
-         r = p0; g = (p1+p2)*0.5f; b = p3;
-    } else if (CfaPattern == 1) { // GRBG
-         g = (p0+p3)*0.5f; r = p1; b = p2;
-    } else if (CfaPattern == 2) { // GBRG
-         g = (p0+p3)*0.5f; b = p1; r = p2;
-    } else { // BGGR
-         b = p0; g = (p1+p2)*0.5f; r = p3;
-    }
-     
-    OutTextureRGBA[gid] = float4(r, g, b, 1.0f);
+
+    // Pack all 4 values directly (no averaging, no CFA interpretation)
+    // This preserves all raw Bayer data for FFT processing
+    OutTextureRGBA[gid] = float4(p0, p1, p2, p3);
 }
 
 [numthreads(16, 16, 1)]
@@ -118,28 +110,19 @@ void convert_to_bayer(uint3 DTid : SV_DispatchThreadID)
     uint2 gid = DTid.xy;
     uint2 inPos = gid / 2;
     float4 rgba = InTextureRGBA.Load(int3(inPos, 0));
+
+    // Determine which pixel in the 2x2 block we're unpacking
     uint x = gid.x % 2;
     uint y = gid.y % 2;
+
+    // Unpack: RGBA channels back to 2x2 Bayer positions
+    // This is the exact inverse of convert_to_rgba
     float val = 0.0f;
-    int p = CfaPattern;
-    
-    if (p == 0) { // RGGB
-        if (x==0 && y==0) val = rgba.x; 
-        else if (x==1 && y==1) val = rgba.z; 
-        else val = rgba.y; 
-    } else if (p == 1) { // GRBG
-        if (x==1 && y==0) val = rgba.x; 
-        else if (x==0 && y==1) val = rgba.z; 
-        else val = rgba.y; 
-    } else if (p == 2) { // GBRG
-        if (x==0 && y==1) val = rgba.x; 
-        else if (x==1 && y==0) val = rgba.z; 
-        else val = rgba.y; 
-    } else { // BGGR
-        if (x==1 && y==1) val = rgba.x; 
-        else if (x==0 && y==0) val = rgba.z; 
-        else val = rgba.y; 
-    }
+    if (x == 0 && y == 0) val = rgba.r;      // Top-left
+    else if (x == 1 && y == 0) val = rgba.g; // Top-right
+    else if (x == 0 && y == 1) val = rgba.b; // Bottom-left
+    else if (x == 1 && y == 1) val = rgba.a; // Bottom-right
+
     OutTextureFloat[gid] = val;
 }
 

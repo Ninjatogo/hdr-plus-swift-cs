@@ -72,11 +72,20 @@ To maintain clarity, the documentation is split into focused files:
 
 ## 5. Recent Changes
 
+### (2026-01-19) Bug Fix: RGBA Conversion Shader Logic
+- **Issue**: `convert_to_rgba` and `convert_to_bayer` shaders were demosaicing instead of direct packing.
+- **Root Cause**: Shaders averaged green channels and used CFA pattern logic, causing data loss.
+- **Fix**:
+  - `convert_to_rgba`: Changed to direct packing `float4(p0, p1, p2, p3)` without averaging
+  - `convert_to_bayer`: Changed to simple positional unpacking based on (x,y) % 2
+- **File**: `BurstPhoto.Rendering/Shaders/TextureOps.hlsl` (lines 89-127)
+- **Status**: Logic fixed, but runtime execution produces zeros (see BACKLOG.md for active debugging)
+
 ### (2026-01-19) Feature: Debug Dump for Intermediate Outputs
 - **Goal**: Enable saving intermediate DNG files at pipeline stages to diagnose black output issues.
 - **Implementation**: Added `--debug-dump` CLI flag, `DebugDump()` helper in `VulkanComputePipeline.cs`.
 - **Stages Captured**: After Prepare, Forward FFT, Merge, Deconvolution, Backward FFT, Exposure Correction.
-- **Finding**: Confirmed Frequency Domain black output is caused by missing RGBA conversion step.
+- **Finding**: Confirmed `step_1_prepare.dng` is valid (16MB), but RGBA conversion produces zeros.
 
 ### (2026-01-19) Bug Fix: Spatial Mode Buffer Allocation
 - **Issue**: `outHeight` was never assigned in spatial mode, causing buffer allocation failures.

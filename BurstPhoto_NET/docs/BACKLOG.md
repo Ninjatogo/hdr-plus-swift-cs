@@ -41,12 +41,21 @@
 - **Conclusion**: Data is lost during FFT processing, not before or after
 
 #### Confirmed Root Cause:
-**Missing RGBA Conversion** - Swift's `convert_to_rgba()` converts single-channel Bayer to RGBA superpixels before FFT. Our code passes R32Sfloat textures, meaning the FFT shader reads only 1/4 of the expected data.
+**Incorrect RGBA Conversion Logic** - The `convert_to_rgba` shader was demosaicing (averaging green channels) instead of directly packing raw Bayer values. Swift's `convert_to_rgba()` packs 4 adjacent Bayer pixels into RGBA channels without any averaging or interpolation.
+
+#### Shader Fixes Applied (2026-01-19):
+| Fix | Description |
+|-----|-------------|
+| `convert_to_rgba` | Removed CFA pattern logic and green channel averaging. Changed to direct packing: `float4(p0, p1, p2, p3)` |
+| `convert_to_bayer` | Removed CFA pattern logic. Changed to simple positional unpacking based on (x,y) % 2 |
+
+**Result**: Shaders now correctly match Swift's implementation, but runtime execution produces zeros (see Active Issues below).
 
 #### Next Steps:
 1. ~~Implement texture dump debugging~~ ✅ Done (2026-01-19)
-2. **Port `convert_to_rgba` and `convert_to_bayer` shaders** - HIGH PRIORITY
-3. Verify FFT output matches Swift reference
+2. ~~Port `convert_to_rgba` and `convert_to_bayer` shaders~~ ✅ Logic Fixed (2026-01-19)
+3. **DEBUG: Investigate why RGBA conversion produces zeros at runtime** - CRITICAL
+4. Verify FFT output matches Swift reference once conversion works
 
 ### 1b. RGBA Conversion for Frequency Domain (Deferred)
 - **Status**: Pending (Deferred to future task).
@@ -98,7 +107,18 @@
 
 ### Active / To Watch
 - **NuGet Warnings**: We see `NU1701` for the C++/CLI wrapper on .NET Core. This is safe to ignore but should be suppressed in csproj.
-- **Frequency Domain Black Output**: Fully wired but produces black images. Needs intermediate texture debugging.
+- **RGBA Conversion Produces Zeros (2026-01-19)**:
+  - **Symptom**: `ExecuteConvertToRgba()` produces all-zero output despite correct shader logic and valid input
+  - **Evidence**: `step_1_prepare.dng` is 16MB (valid), but `RGBA sum (first 1000): 0.00` after conversion
+  - **Shader Code**: Verified correct - matches Swift implementation exactly
+  - **Compilation**: No errors - shader compiles successfully
+  - **Possible Causes**:
+    - Vulkan descriptor binding issue (wrong binding slots or types)
+    - Memory barrier/synchronization issue (input texture not ready)
+    - Image layout transition issue (texture in wrong layout for reading)
+    - Descriptor set update issue (bindings not properly updated)
+  - **Location**: `VulkanComputePipeline.cs:1246-1293` (`ExecuteConvertToRgba`)
+  - **Priority**: CRITICAL - blocks Frequency Domain merge entirely
 
 ## Items Needing Verification
 
