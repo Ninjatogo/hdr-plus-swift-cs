@@ -1,0 +1,81 @@
+[LOG] Output being saved to: logs\process_20260119_220806.log
+[38;5;12mProcessing 2 images...[0m
+Loading images...
+Loading image DJI_20251218173647_0202_D.DNG from disk.
+Loading image DJI_20251218173647_0203_D.DNG from disk.
+Time to load all images: 0.396s
+Selected reference frame: 1 (DJI_20251218173647_0203_D.DNG)
+Tile grid: 255x191, search positions: 289
+Processing images...
+[VulkanComputePipeline] Starting processing...
+[VulkanComputePipeline] DEBUG DUMP ENABLED - intermediate DNGs will be saved to DebugOutput/
+[VulkanComputePipeline] Input: 4096x3072, Padded: 4096x3072, Mode: HigherQuality
+[VulkanComputePipeline] Uploading Reference Frame...
+[VulkanComputePipeline] Executing Prepare Pass...
+[DebugDump] Saving step_1_prepare to DebugOutput\step_1_prepare.dng...
+[DngSdkWriter] Writing DNG: DebugOutput\step_1_prepare.dng
+  Source: c:\Users\maxwe\RiderProjects\hdr-plus-swift-cs\BurstPhoto_NET\Burst Samples\Static Exposure\DJI_20251218173647_0203_D.DNG
+  Dimensions: 4096x3072
+  WhiteLevel: 65472
+[DngSdkWriter] Successfully wrote: DebugOutput\step_1_prepare.dng
+[DebugDump] Saved step_1_prepare successfully.
+[VulkanComputePipeline] Generating Alignment Pyramid...
+[VulkanComputePipeline] Starting Alignment Search...
+[VulkanComputePipeline] FFT Dimensions: Bayer=4096x3072, RGBA=2048x1536, FT=4096x1536
+[VulkanComputePipeline] Converting Reference to RGBA...
+[DebugDump] step_1b_rgba - RGBA sum (first 1000): 128.00, Total elements: 3145728
+[ExecuteForwardFft] Input: 2048x1536, Output: 4096x1536
+[ExecuteForwardFft] TileSize=8, Spatial=2048x1536, Tiles=256x192
+[ExecuteForwardFft] Dispatching 16x12 groups (256x192 threads)
+[DebugDump] Saving step_2_fft_ref to DebugOutput\step_2_fft_ref.dng...
+[DebugDump] Error saving step_2_fft_ref: Index was outside the bounds of the array.
+[VulkanComputePipeline] GPU Noise Estimation: totalDiff=0.00, noiseSd=0.00
+[VulkanComputePipeline] Estimated Noise SD: 1.0000
+[VulkanComputePipeline] Aligning Image 0...
+[VulkanComputePipeline] Using generic kernel (n_pos_2d=289)
+[VulkanComputePipeline] Warping Image 0...
+[VulkanComputePipeline] Merging Image 0...
+[DebugDump] Saving step_3_merge_accum_ft to DebugOutput\step_3_merge_accum_ft.dng...
+[DebugDump] Error saving step_3_merge_accum_ft: Index was outside the bounds of the array.
+[VulkanComputePipeline] Downloading Merged Result...
+[VulkanComputePipeline] Post-FFT: RGBA=2048x1536, Tiles=256x192
+[VulkanComputePipeline] Executing Deconvolution...
+[DebugDump] Saving step_4_deconv_ft to DebugOutput\step_4_deconv_ft.dng...
+[DebugDump] Error saving step_4_deconv_ft: Index was outside the bounds of the array.
+[VulkanComputePipeline] Executing Backward FFT to RGBA...
+[ExecuteBackwardFft] InputFT: 4096x1536, Output: 2048x1536
+[ExecuteBackwardFft] TileSize=8, NumTextures=2, Tiles=256x192
+[ExecuteBackwardFft] Dispatching 16x12 groups (256x192 threads)
+[DebugDump] step_5_back_fft_rgba - RGBA output sum (first 1000): 0.00, Total elements: 3145728
+[DebugDump] WARNING: Backward FFT RGBA output appears to be zeros!
+[VulkanComputePipeline] Converting RGBA to Bayer...
+[DebugDump] Saving step_5_back_fft to DebugOutput\step_5_back_fft.dng...
+[DngSdkWriter] Writing DNG: DebugOutput\step_5_back_fft.dng
+  Source: c:\Users\maxwe\RiderProjects\hdr-plus-swift-cs\BurstPhoto_NET\Burst Samples\Static Exposure\DJI_20251218173647_0203_D.DNG
+  Dimensions: 4096x3072
+  WhiteLevel: 65472
+[DngSdkWriter] Successfully wrote: DebugOutput\step_5_back_fft.dng
+[DebugDump] Saved step_5_back_fft successfully.
+[VulkanComputePipeline] Reducing Tile Border Artifacts...
+[VulkanComputePipeline] Uploading for Exposure Correction...
+[VulkanComputePipeline] Executing Exposure Correction: LinearFullRange
+[DebugDump] Saving step_6_exposure to DebugOutput\step_6_exposure.dng...
+[DngSdkWriter] Writing DNG: DebugOutput\step_6_exposure.dng
+  Source: c:\Users\maxwe\RiderProjects\hdr-plus-swift-cs\BurstPhoto_NET\Burst Samples\Static Exposure\DJI_20251218173647_0203_D.DNG
+  Dimensions: 4096x3072
+  WhiteLevel: 65472
+[DngSdkWriter] Successfully wrote: DebugOutput\step_6_exposure.dng
+[DebugDump] Saved step_6_exposure successfully.
+[VulkanComputePipeline] Converting to Output...
+Writing output to: DebugTest\output.dng\DJI_20251218173647_0203_D_n2_hdr_q13_l0.dng
+Result image: 4096x3072, Data len: 12582912
+[DngSdkWriter] Writing DNG: DebugTest\output.dng\DJI_20251218173647_0203_D_n2_hdr_q13_l0.dng
+  Source: c:\Users\maxwe\RiderProjects\hdr-plus-swift-cs\BurstPhoto_NET\Burst Samples\Static Exposure\DJI_20251218173647_0203_D.DNG
+  Dimensions: 4096x3072
+  WhiteLevel: 65472
+[DngSdkWriter] Successfully wrote: DebugTest\output.dng\DJI_20251218173647_0203_D_n2_hdr_q13_l0.dng
+Total processing time for 2 images: 4.754s
+[38;5;2mOutput saved to: [0m
+[38;5;2mDebugTest\output.dng\DJI_2025[0m
+[38;5;2m1218173647_0203_D_n2_hdr_q13_[0m
+[38;5;2ml0.dng[0m

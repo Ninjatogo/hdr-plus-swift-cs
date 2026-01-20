@@ -15,6 +15,8 @@ public unsafe class VulkanContext : IDisposable
     public Queue ComputeQueue { get; private set; }
     public uint ComputeQueueFamilyIndex { get; private set; }
 
+    public CommandPool CommandPool { get; private set; }
+
     public VulkanContext()
     {
         Console.WriteLine("Initializing Vulkan...");
@@ -22,6 +24,7 @@ public unsafe class VulkanContext : IDisposable
         CreateInstance();
         PickPhysicalDevice();
         CreateLogicalDevice();
+        CreateCommandPool();
         Console.WriteLine("Vulkan Initialized.");
     }
 
@@ -136,8 +139,65 @@ public unsafe class VulkanContext : IDisposable
         ComputeQueue = queue;
     }
 
+    private void CreateCommandPool()
+    {
+        var poolInfo = new CommandPoolCreateInfo
+        {
+            SType = StructureType.CommandPoolCreateInfo,
+            QueueFamilyIndex = ComputeQueueFamilyIndex,
+            Flags = CommandPoolCreateFlags.ResetCommandBufferBit
+        };
+
+        if (Vk.CreateCommandPool(Device, in poolInfo, null, out var pool) != Result.Success)
+        {
+            throw new Exception("Failed to create command pool");
+        }
+        CommandPool = pool;
+    }
+
+    public CommandBuffer BeginSingleTimeCommands()
+    {
+        var allocInfo = new CommandBufferAllocateInfo
+        {
+            SType = StructureType.CommandBufferAllocateInfo,
+            Level = CommandBufferLevel.Primary,
+            CommandPool = CommandPool,
+            CommandBufferCount = 1
+        };
+
+        Vk.AllocateCommandBuffers(Device, in allocInfo, out var commandBuffer);
+
+        var beginInfo = new CommandBufferBeginInfo
+        {
+            SType = StructureType.CommandBufferBeginInfo,
+            Flags = CommandBufferUsageFlags.OneTimeSubmitBit
+        };
+
+        Vk.BeginCommandBuffer(commandBuffer, in beginInfo);
+
+        return commandBuffer;
+    }
+
+    public void EndSingleTimeCommands(CommandBuffer commandBuffer)
+    {
+        Vk.EndCommandBuffer(commandBuffer);
+
+        var submitInfo = new SubmitInfo
+        {
+            SType = StructureType.SubmitInfo,
+            CommandBufferCount = 1,
+            PCommandBuffers = &commandBuffer
+        };
+
+        Vk.QueueSubmit(ComputeQueue, 1, in submitInfo, default);
+        Vk.QueueWaitIdle(ComputeQueue);
+
+        Vk.FreeCommandBuffers(Device, CommandPool, 1, in commandBuffer);
+    }
+
     public void Dispose()
     {
+        Vk.DestroyCommandPool(Device, CommandPool, null);
         Vk.DestroyDevice(Device, null);
         Vk.DestroyInstance(Instance, null);
         Vk.Dispose();

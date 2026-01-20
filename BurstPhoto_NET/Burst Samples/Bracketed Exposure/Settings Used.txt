@@ -1,0 +1,6 @@
+Exposure Control: Linear (full bit range)
+Noise Reduction: 5
+Tile Size: Medium
+Search distance: Medium
+Merging algorithm: Fast
+Output bit depth: Native
