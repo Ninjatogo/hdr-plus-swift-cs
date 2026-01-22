@@ -24,7 +24,9 @@ public unsafe class VulkanDescriptorManager : IDisposable
         {
             new() { Type = DescriptorType.StorageBuffer, DescriptorCount = maxSets * 4 },
             new() { Type = DescriptorType.StorageImage, DescriptorCount = maxSets * 4 },
-            // Add UniformBuffer or CombinedImageSampler if needed later
+            new() { Type = DescriptorType.UniformBuffer, DescriptorCount = maxSets * 4 },
+            new() { Type = DescriptorType.SampledImage, DescriptorCount = maxSets * 8 },  // Frequency shaders use up to 5 sampled images
+            new() { Type = DescriptorType.CombinedImageSampler, DescriptorCount = maxSets * 4 },  // For future use
         };
 
         fixed (DescriptorPoolSize* pPoolSizes = poolSizes)

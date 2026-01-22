@@ -77,6 +77,8 @@ RWTexture2D<float> OutTextureFloat : register(u10);
 RWTexture2D<uint> OutTextureUint   : register(u11);
 
 [[vk::binding(12, 0)]]
+// NOTE: image_format attribute removed - requires ShaderStorageImageWriteWithoutFormat feature instead
+// [[vk::image_format("rgba32f")]]  // This causes DXC compilation errors on some systems
 RWTexture2D<float4> OutTextureRGBA : register(u12);
 
 // -------------------------------------------------------------------------

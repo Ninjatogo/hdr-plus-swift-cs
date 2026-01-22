@@ -64,13 +64,35 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
         [CommandOption("--log-file")]
         [Description("Custom log file path (implies --log)")]
         public string? LogFile { get; set; } = null;
+
+        [CommandOption("--gpu")]
+        [Description("GPU device index to use (0, 1, etc.). Use --list-gpus to see available devices. Can also be set via BURSTPHOTO_GPU environment variable.")]
+        public int? GpuIndex { get; set; } = null;
+
+        [CommandOption("--list-gpus")]
+        [Description("List available GPU devices and exit")]
+        public bool ListGpus { get; set; } = false;
     }
 
     public override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
+        // Handle --list-gpus command
+        if (settings.ListGpus)
+        {
+            ListAvailableGpus();
+            return 0;
+        }
+
+        // Handle --gpu option by setting environment variable for this process
+        if (settings.GpuIndex.HasValue)
+        {
+            Environment.SetEnvironmentVariable("BURSTPHOTO_GPU", settings.GpuIndex.Value.ToString());
+            Console.WriteLine($"[INFO] GPU device index set to {settings.GpuIndex.Value} for this session");
+        }
+
         TextWriter? logWriter = null;
         TextWriter originalOut = Console.Out;
-        
+
         try
         {
             // Setup logging if requested
@@ -82,7 +104,7 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
                 {
                     Directory.CreateDirectory(logDir);
                 }
-                
+
                 logWriter = new StreamWriter(logPath, append: false) { AutoFlush = true };
                 Console.SetOut(new TeeTextWriter(originalOut, logWriter));
                 Console.WriteLine($"[LOG] Output being saved to: {logPath}");
@@ -160,6 +182,25 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
             "curve1ev" => ExposureControlOption.Curve1EV,
             _ => throw new ArgumentException($"Invalid exposure control: {value}")
         };
+    }
+
+    private static void ListAvailableGpus()
+    {
+        try
+        {
+            // Temporarily create a VulkanContext just to enumerate devices
+            // The constructor will print all available GPUs
+            Console.WriteLine("Enumerating available Vulkan devices...\n");
+            using var ctx = new BurstPhoto.Rendering.VulkanContext();
+            Console.WriteLine("\nTo use a specific GPU, use one of these methods:");
+            Console.WriteLine("  1. Command-line: --gpu <index>");
+            Console.WriteLine("  2. Environment variable: set BURSTPHOTO_GPU=<index>");
+            Console.WriteLine("\nExample: burstphoto process --gpu 0 input1.dng input2.dng");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error enumerating GPUs: {ex.Message}");
+        }
     }
 }
 

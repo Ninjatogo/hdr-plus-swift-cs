@@ -240,26 +240,46 @@ public unsafe class VulkanImage : IDisposable
         TransitionLayout(ImageLayout.General, cmdBuffer);
     }
 
+    /// <summary>
+    /// Gets the number of bytes per pixel for the image format
+    /// </summary>
+    private int GetBytesPerPixel()
+    {
+        return Format switch
+        {
+            Format.R32Sfloat => 4,
+            Format.R32G32Sfloat => 8,
+            Format.R32G32B32Sfloat => 12,
+            Format.R32G32B32A32Sfloat => 16,
+            Format.R16Sfloat => 2,
+            Format.R16G16Sfloat => 4,
+            Format.R16G16B16A16Sfloat => 8,
+            Format.R8Unorm => 1,
+            Format.R8G8B8A8Unorm => 4,
+            _ => throw new NotSupportedException($"Format {Format} not supported for GetData")
+        };
+    }
+
     public T[] GetData<T>(CommandBuffer? cmdBuffer = null, bool wait = true) where T : unmanaged
     {
-        ulong size = (ulong)(Width * Height * sizeof(T)); // Assuming packed
-         // Note: row alignment might be issue for T[] but for tightly packed formats usually fine.
-         // Image copies to buffer are tightly packed usually if row pitch = width.
-         
-        using var stagingBuffer = new VulkanBuffer(_ctx, size, BufferUsageFlags.TransferDstBit, 
+        // Calculate ACTUAL image size in bytes based on format, not sizeof(T)
+        int bytesPerPixel = GetBytesPerPixel();
+        ulong imageSize = (ulong)(Width * Height * bytesPerPixel);
+
+        using var stagingBuffer = new VulkanBuffer(_ctx, imageSize, BufferUsageFlags.TransferDstBit,
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
-            
+
         TransitionLayout(ImageLayout.TransferSrcOptimal, cmdBuffer);
-        
+
         bool singleTime = cmdBuffer == null;
         var cmd = cmdBuffer ?? _ctx.BeginSingleTimeCommands();
-        
+
         var region = new BufferImageCopy
         {
             BufferImageHeight = 0,
             BufferRowLength = 0,
             BufferOffset = 0,
-            
+
             ImageSubresource = new ImageSubresourceLayers
             {
                 AspectMask = ImageAspectFlags.ColorBit,
@@ -270,17 +290,18 @@ public unsafe class VulkanImage : IDisposable
             ImageOffset = new Offset3D(0, 0, 0),
             ImageExtent = new Extent3D(Width, Height, 1)
         };
-        
+
         _ctx.Vk.CmdCopyImageToBuffer(cmd, Handle, ImageLayout.TransferSrcOptimal, stagingBuffer.Handle, 1, in region);
-        
+
         if (singleTime)
         {
             _ctx.EndSingleTimeCommands(cmd);
         }
-        
+
         TransitionLayout(ImageLayout.General, cmdBuffer);
-        
-        ulong count = size / (ulong)sizeof(T);
+
+        // Return all data as T[] - the count is based on actual image data size
+        ulong count = imageSize / (ulong)sizeof(T);
         return stagingBuffer.GetData<T>(count);
     }
 

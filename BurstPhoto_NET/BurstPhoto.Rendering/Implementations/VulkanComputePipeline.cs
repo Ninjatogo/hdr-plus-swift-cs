@@ -492,9 +492,27 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                         ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
                     ExecuteWarp(preparedAlt, warpedAlt, alignment, tileInfo);
 
+                    // DEBUG: Check warpedAlt before RGBA conversion
+                    {
+                        float[] warpData = warpedAlt.GetData<float>();
+                        double warpSum = 0;
+                        int warpSamples = Math.Min(warpData.Length, 1000);
+                        for (int i = 0; i < warpSamples; i++) warpSum += Math.Abs(warpData[i]);
+                        Console.WriteLine($"[WARP DEBUG] warpedAlt BEFORE convert: sum={warpSum:F2}, mean={warpSum/warpSamples:F4}");
+                    }
+
                     using var alignedTextureRgba = new VulkanImage(_ctx, (uint)rgbaWidth, (uint)rgbaHeight, Format.R32G32B32A32Sfloat,
                         ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
                     ExecuteConvertToRgba(warpedAlt, alignedTextureRgba, refImage.CfaPattern, cropMergeX, cropMergeY);
+
+                    // DEBUG: Check alignedTextureRgba after RGBA conversion
+                    {
+                        float[] rgbaData = alignedTextureRgba.GetData<float>();
+                        double rgbaSum = 0;
+                        int rgbaSamples = Math.Min(rgbaData.Length, 1000);
+                        for (int i = 0; i < rgbaSamples; i++) rgbaSum += Math.Abs(rgbaData[i]);
+                        Console.WriteLine($"[WARP DEBUG] alignedTextureRgba AFTER convert: sum={rgbaSum:F2}, mean={rgbaSum/rgbaSamples:F4}");
+                    }
 
                     // Calculate exposure factor
                     double exposureFactor = Math.Pow(2.0, (altImage.ExposureBias - refImage.ExposureBias) / 100.0);
@@ -1128,9 +1146,40 @@ public unsafe class VulkanComputePipeline : IComputePipeline
     private void EnsureMergeFrequencyPipeline()
     {
         if (_kernelMergeFrequency != null) return;
-        
+
+        // Check if the required Vulkan feature is supported
+        if (!_ctx.SupportsStorageImageWriteWithoutFormat)
+        {
+            Console.WriteLine("\n╔════════════════════════════════════════════════════════════════");
+            Console.WriteLine("║ ❌ FREQUENCY DOMAIN PIPELINE UNAVAILABLE");
+            Console.WriteLine("╠════════════════════════════════════════════════════════════════");
+            Console.WriteLine("║ Cannot initialize HigherQuality algorithm:");
+            Console.WriteLine("║ ");
+            Console.WriteLine("║ Required Vulkan feature NOT supported:");
+            Console.WriteLine("║   ShaderStorageImageWriteWithoutFormat = false");
+            Console.WriteLine("║");
+            Console.WriteLine("║ This feature is required for:");
+            Console.WriteLine("║   - RWTexture2D<float4> writes in compute shaders");
+            Console.WriteLine("║   - FFT-based frequency domain processing");
+            Console.WriteLine("║");
+            Console.WriteLine("║ Solution:");
+            Console.WriteLine("║   Use --algorithm Fast instead of HigherQuality");
+            Console.WriteLine("║");
+            Console.WriteLine("║ Or try:");
+            Console.WriteLine("║   1. Update GPU drivers");
+            Console.WriteLine("║   2. Use --list-gpus and --gpu <index> to try another GPU");
+            Console.WriteLine("╚════════════════════════════════════════════════════════════════\n");
+
+            throw new NotSupportedException(
+                "HigherQuality algorithm requires ShaderStorageImageWriteWithoutFormat, which is not supported by this GPU. " +
+                "Use --algorithm Fast instead, or try a different GPU with --gpu <index>.");
+        }
+
+        Console.WriteLine("[Pipeline] Initializing Frequency Domain (HigherQuality) pipeline...");
+        Console.WriteLine("[Pipeline] Using new modular shader architecture (no string replacement)");
+
         // IMPORTANT: Bindings must match [[vk::binding]] attributes in shaders!
-        // MergeFrequency.hlsl uses: t1→Binding1, t2→Binding2, t3→Binding3, t4→Binding4, t5→Binding5, u10→Binding10
+        // FrequencyCommon.hlsli uses: t1→Binding1, t2→Binding2, t3→Binding3, t4→Binding4, t5→Binding5, u10→Binding10
         _frequencyLayout = _descriptors.CreateLayout(new[]
         {
             new DescriptorSetLayoutBinding { Binding = 0, DescriptorType = DescriptorType.UniformBuffer, DescriptorCount = 1, StageFlags = ShaderStageFlags.ComputeBit },  // b0
@@ -1141,57 +1190,86 @@ public unsafe class VulkanComputePipeline : IComputePipeline
             new DescriptorSetLayoutBinding { Binding = 5, DescriptorType = DescriptorType.SampledImage, DescriptorCount = 1, StageFlags = ShaderStageFlags.ComputeBit },  // t5 AuxTexture2 (Highlights)
             new DescriptorSetLayoutBinding { Binding = 10, DescriptorType = DescriptorType.StorageImage, DescriptorCount = 1, StageFlags = ShaderStageFlags.ComputeBit }  // u10 OutputTexture
         });
-        
+
         string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-        string shaderPath = Path.Combine(baseDir, "Shaders", "MergeFrequency.hlsl");
-        string constantsPath = Path.Combine(baseDir, "Shaders", "Constants.hlsli");
-        
-        string source = File.ReadAllText(shaderPath);
-        if (File.Exists(constantsPath))
-        {
-            string constants = File.ReadAllText(constantsPath);
-            source = source.Replace("#include \"Constants.hlsli\"", constants);
-        }
-        
+        string frequencyDir = Path.Combine(baseDir, "Shaders", "Frequency");
+
+        // Compile each shader from its own file (no string replacement!)
+        // This eliminates the fragile string replacement approach and ensures clean compilation
+
         // calculate_abs_diff_rgba
-        string srcAbs = source.Replace("void calculate_abs_diff_rgba(", "void CSMain(");
-        _kernelAbsDiff = new ComputeKernel(_ctx, _frequencyLayout, _compiler.Compile(srcAbs, "CSMain"), "CSMain", 16, 16, 1);
-        
+        Console.WriteLine("[Pipeline]   Compiling calculate_abs_diff_rgba.hlsl...");
+        string absPath = Path.Combine(frequencyDir, "calculate_abs_diff_rgba.hlsl");
+        byte[] spirvAbs = _compiler.CompileFile(absPath);
+        Console.WriteLine($"[Pipeline]   ✓ calculate_abs_diff_rgba compiled successfully ({spirvAbs.Length} bytes SPIR-V)");
+        _kernelAbsDiff = new ComputeKernel(_ctx, _frequencyLayout, spirvAbs, "CSMain", 16, 16, 1);
+
         // calculate_rms_rgba
-        string srcRms = source.Replace("void calculate_rms_rgba(", "void CSMain(");
-        _kernelRms = new ComputeKernel(_ctx, _frequencyLayout, _compiler.Compile(srcRms, "CSMain"), "CSMain", 16, 16, 1);
-        
+        Console.WriteLine("[Pipeline]   Compiling calculate_rms_rgba.hlsl...");
+        string rmsPath = Path.Combine(frequencyDir, "calculate_rms_rgba.hlsl");
+        byte[] spirvRms = _compiler.CompileFile(rmsPath);
+        Console.WriteLine($"[Pipeline]   ✓ calculate_rms_rgba compiled successfully ({spirvRms.Length} bytes SPIR-V)");
+        _kernelRms = new ComputeKernel(_ctx, _frequencyLayout, spirvRms, "CSMain", 16, 16, 1);
+
         // calculate_mismatch_rgba
-        string srcMis = source.Replace("void calculate_mismatch_rgba(", "void CSMain(");
-        _kernelMismatch = new ComputeKernel(_ctx, _frequencyLayout, _compiler.Compile(srcMis, "CSMain"), "CSMain", 16, 16, 1);
-        
+        Console.WriteLine("[Pipeline]   Compiling calculate_mismatch_rgba.hlsl...");
+        string misPath = Path.Combine(frequencyDir, "calculate_mismatch_rgba.hlsl");
+        byte[] spirvMis = _compiler.CompileFile(misPath);
+        Console.WriteLine($"[Pipeline]   ✓ calculate_mismatch_rgba compiled successfully ({spirvMis.Length} bytes SPIR-V)");
+        _kernelMismatch = new ComputeKernel(_ctx, _frequencyLayout, spirvMis, "CSMain", 16, 16, 1);
+
         // calculate_highlights_norm_rgba
-        string srcHigh = source.Replace("void calculate_highlights_norm_rgba(", "void CSMain(");
-        _kernelHighlightsNorm = new ComputeKernel(_ctx, _frequencyLayout, _compiler.Compile(srcHigh, "CSMain"), "CSMain", 16, 16, 1);
-        
+        Console.WriteLine("[Pipeline]   Compiling calculate_highlights_norm_rgba.hlsl...");
+        string highPath = Path.Combine(frequencyDir, "calculate_highlights_norm_rgba.hlsl");
+        byte[] spirvHigh = _compiler.CompileFile(highPath);
+        Console.WriteLine($"[Pipeline]   ✓ calculate_highlights_norm_rgba compiled successfully ({spirvHigh.Length} bytes SPIR-V)");
+        _kernelHighlightsNorm = new ComputeKernel(_ctx, _frequencyLayout, spirvHigh, "CSMain", 16, 16, 1);
+
         // normalize_mismatch
-        string srcNorm = source.Replace("void normalize_mismatch(", "void CSMain(");
-        _kernelNormalizeMismatch = new ComputeKernel(_ctx, _frequencyLayout, _compiler.Compile(srcNorm, "CSMain"), "CSMain", 16, 16, 1);
-        
+        Console.WriteLine("[Pipeline]   Compiling normalize_mismatch.hlsl...");
+        string normPath = Path.Combine(frequencyDir, "normalize_mismatch.hlsl");
+        byte[] spirvNorm = _compiler.CompileFile(normPath);
+        Console.WriteLine($"[Pipeline]   ✓ normalize_mismatch compiled successfully ({spirvNorm.Length} bytes SPIR-V)");
+        _kernelNormalizeMismatch = new ComputeKernel(_ctx, _frequencyLayout, spirvNorm, "CSMain", 16, 16, 1);
+
         // reduce_artifacts_tile_border
-        string srcArt = source.Replace("void reduce_artifacts_tile_border(", "void CSMain(");
-        _kernelArtifactsTileBorder = new ComputeKernel(_ctx, _frequencyLayout, _compiler.Compile(srcArt, "CSMain"), "CSMain", 16, 16, 1);
-        
+        Console.WriteLine("[Pipeline]   Compiling reduce_artifacts_tile_border.hlsl...");
+        string artPath = Path.Combine(frequencyDir, "reduce_artifacts_tile_border.hlsl");
+        byte[] spirvArt = _compiler.CompileFile(artPath);
+        Console.WriteLine($"[Pipeline]   ✓ reduce_artifacts_tile_border compiled successfully ({spirvArt.Length} bytes SPIR-V)");
+        _kernelArtifactsTileBorder = new ComputeKernel(_ctx, _frequencyLayout, spirvArt, "CSMain", 16, 16, 1);
+
         // forward_fft
-        string srcFwd = source.Replace("void forward_fft(", "void CSMain(");
-        _kernelForwardFft = new ComputeKernel(_ctx, _frequencyLayout, _compiler.Compile(srcFwd, "CSMain"), "CSMain", 16, 16, 1);
-        
+        Console.WriteLine("[Pipeline]   Compiling forward_fft.hlsl...");
+        string fwdPath = Path.Combine(frequencyDir, "forward_fft.hlsl");
+        byte[] spirvFwd = _compiler.CompileFile(fwdPath);
+        Console.WriteLine($"[Pipeline]   ✓ forward_fft compiled successfully ({spirvFwd.Length} bytes SPIR-V)");
+        _kernelForwardFft = new ComputeKernel(_ctx, _frequencyLayout, spirvFwd, "CSMain", 16, 16, 1);
+        Console.WriteLine("[Pipeline]   ✓ forward_fft kernel created");
+
         // backward_fft
-        string srcBwd = source.Replace("void backward_fft(", "void CSMain(");
-        _kernelBackwardFft = new ComputeKernel(_ctx, _frequencyLayout, _compiler.Compile(srcBwd, "CSMain"), "CSMain", 16, 16, 1);
-        
+        Console.WriteLine("[Pipeline]   Compiling backward_fft.hlsl...");
+        string bwdPath = Path.Combine(frequencyDir, "backward_fft.hlsl");
+        byte[] spirvBwd = _compiler.CompileFile(bwdPath);
+        Console.WriteLine($"[Pipeline]   ✓ backward_fft compiled successfully ({spirvBwd.Length} bytes SPIR-V)");
+        _kernelBackwardFft = new ComputeKernel(_ctx, _frequencyLayout, spirvBwd, "CSMain", 16, 16, 1);
+        Console.WriteLine("[Pipeline]   ✓ backward_fft kernel created");
+
         // merge_frequency_domain
-        string srcMerge = source.Replace("void merge_frequency_domain(", "void CSMain(");
-        _kernelMergeFrequency = new ComputeKernel(_ctx, _frequencyLayout, _compiler.Compile(srcMerge, "CSMain"), "CSMain", 16, 16, 1);
-        
+        Console.WriteLine("[Pipeline]   Compiling merge_frequency_domain.hlsl...");
+        string mergePath = Path.Combine(frequencyDir, "merge_frequency_domain.hlsl");
+        byte[] spirvMerge = _compiler.CompileFile(mergePath);
+        Console.WriteLine($"[Pipeline]   ✓ merge_frequency_domain compiled successfully ({spirvMerge.Length} bytes SPIR-V)");
+        _kernelMergeFrequency = new ComputeKernel(_ctx, _frequencyLayout, spirvMerge, "CSMain", 16, 16, 1);
+
         // deconvolute_frequency_domain
-        string srcDeconv = source.Replace("void deconvolute_frequency_domain(", "void CSMain(");
-        _kernelDeconvoluteFrequency = new ComputeKernel(_ctx, _frequencyLayout, _compiler.Compile(srcDeconv, "CSMain"), "CSMain", 16, 16, 1);
+        Console.WriteLine("[Pipeline]   Compiling deconvolute_frequency_domain.hlsl...");
+        string deconvPath = Path.Combine(frequencyDir, "deconvolute_frequency_domain.hlsl");
+        byte[] spirvDeconv = _compiler.CompileFile(deconvPath);
+        Console.WriteLine($"[Pipeline]   ✓ deconvolute_frequency_domain compiled successfully ({spirvDeconv.Length} bytes SPIR-V)");
+        _kernelDeconvoluteFrequency = new ComputeKernel(_ctx, _frequencyLayout, spirvDeconv, "CSMain", 16, 16, 1);
+
+        Console.WriteLine("[Pipeline] ✓ All frequency domain shaders compiled successfully!");
     }
     
     private void ExecuteMergeFrequency(VulkanImage refFT, VulkanImage refPyramid0, VulkanImage aligned, VulkanImage weightAccum, VulkanImage pixelAccumFT, 
@@ -1361,8 +1439,29 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         DispatchTileGrid(_kernelHighlightsNorm!, texHighlights, aligned);
         
         // 7. Forward FFT Aligned (per-tile FFT dispatch)
+        // DEBUG: Check input to FFT
+        {
+            float[] inputData = aligned.GetData<float>();
+            double inputSum = 0;
+            int inputSamples = Math.Min(inputData.Length, 1000);
+            for (int i = 0; i < inputSamples; i++) inputSum += Math.Abs(inputData[i]);
+            Console.WriteLine($"[FFT DEBUG] BEFORE FFT: aligned texture sum={inputSum:F2}, mean={inputSum/inputSamples:F4}, samples={inputSamples}, total_size={inputData.Length}");
+            Console.WriteLine($"[FFT DEBUG] Input dimensions: {aligned.Width}x{aligned.Height}, format={aligned.Format}");
+            Console.WriteLine($"[FFT DEBUG] Output dimensions: {texAlignedFT.Width}x{texAlignedFT.Height}, format={texAlignedFT.Format}");
+        }
+
         DispatchTile(_kernelForwardFft!, texAlignedFT, aligned);
-        
+
+        // DEBUG: Check output from FFT
+        {
+            float[] outputData = texAlignedFT.GetData<float>();
+            double outputSum = 0;
+            int outputSamples = Math.Min(outputData.Length, 1000);
+            for (int i = 0; i < outputSamples; i++) outputSum += Math.Abs(outputData[i]);
+            Console.WriteLine($"[FFT DEBUG] AFTER FFT: texAlignedFT sum={outputSum:F2}, mean={outputSum/outputSamples:F4}, samples={outputSamples}");
+            if (outputSum < 0.01) Console.WriteLine($"[FFT DEBUG] ❌ FFT OUTPUT IS ZERO!");
+        }
+
         // 8. Merge Frequency (per-tile dispatch)
         // u0=AccumFT, t0=RefFT, t1=AlignedFT, t2=RMS, t3=Mismatch, t4=Highlights
         DispatchTile(_kernelMergeFrequency!, pixelAccumFT, refFT, texAlignedFT, texRms, texMismatch, texHighlights);
@@ -1447,41 +1546,132 @@ public unsafe class VulkanComputePipeline : IComputePipeline
     
     private void ExecuteForwardFft(VulkanImage input, VulkanImage output, int tileSize, int width, int height)
     {
-       EnsureMergeFrequencyPipeline();
-       
-       // Calculate dispatch dimensions
-       int nTilesX = width / tileSize;
-       int nTilesY = height / tileSize;
-       
-       Console.WriteLine($"[ExecuteForwardFft] Input: {input.Width}x{input.Height}, Output: {output.Width}x{output.Height}");
-       Console.WriteLine($"[ExecuteForwardFft] TileSize={tileSize}, Spatial={width}x{height}, Tiles={nTilesX}x{nTilesY}");
-       
-       var freqParams = new FrequencyParams { TileSize = tileSize };
-       using var pb = new VulkanBuffer(_ctx, (ulong)Marshal.SizeOf<FrequencyParams>(), BufferUsageFlags.UniformBufferBit, MemoryPropertyFlags.HostVisibleBit);
-       pb.SetData(new[] { freqParams });
-       
-       var cmd = _ctx.BeginSingleTimeCommands();
-       
-       // CRITICAL: Transition images to correct layout before dispatch
-       input.TransitionLayout(ImageLayout.General, cmd);
-       output.TransitionLayout(ImageLayout.General, cmd);
-       
-       var set = _descriptors.Allocate(_frequencyLayout);
-       _descriptors.UpdateBuffer(set, 0, pb.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
-       _descriptors.UpdateImage(set, 1, input.View, ImageLayout.General, DescriptorType.SampledImage); // t1 = RefTexture (input)
-       _descriptors.UpdateImage(set, 10, output.View, ImageLayout.General, DescriptorType.StorageImage); // u10 = OutputTexture
-       
-       _kernelForwardFft!.BindPipeline(cmd);
-       _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _kernelForwardFft.PipelineLayout, 0, 1, &set, 0, null);
-       
-       // Dispatch 1 thread per tile. Group size (16,16).
-       // Threads needed: nTilesX, nTilesY.
-       uint groupsX = (uint)Math.Ceiling((double)nTilesX / 16.0);
-       uint groupsY = (uint)Math.Ceiling((double)nTilesY / 16.0);
-       
-       Console.WriteLine($"[ExecuteForwardFft] Dispatching {groupsX}x{groupsY} groups ({nTilesX}x{nTilesY} threads)");
-       _kernelForwardFft.Dispatch(cmd, groupsX, groupsY, 1);
-       _ctx.EndSingleTimeCommands(cmd);
+       Console.WriteLine($"[EXEC FFT] *** ExecuteForwardFft CALLED ***");
+       Console.WriteLine($"[EXEC FFT] About to start try block");
+
+       try
+       {
+           Console.WriteLine($"[EXEC FFT] Inside try block, about to call EnsureMergeFrequencyPipeline");
+           EnsureMergeFrequencyPipeline();
+           Console.WriteLine($"[EXEC FFT] Pipeline initialized");
+
+           // Calculate dispatch dimensions
+           int nTilesX = width / tileSize;
+           int nTilesY = height / tileSize;
+
+           Console.WriteLine($"║ [2/9] Configuration:");
+           Console.WriteLine($"║       Input texture:  {input.Width}x{input.Height} (format: {input.Format})");
+           Console.WriteLine($"║       Output texture: {output.Width}x{output.Height} (format: {output.Format})");
+           Console.WriteLine($"║       TileSize: {tileSize}");
+           Console.WriteLine($"║       Spatial dimensions: {width}x{height}");
+           Console.WriteLine($"║       Tile grid: {nTilesX}x{nTilesY} tiles");
+           Console.WriteLine($"║       Expected threads: {nTilesX * nTilesY}");
+
+           Console.WriteLine($"║ [3/9] Creating parameter buffer...");
+           var freqParams = new FrequencyParams { TileSize = tileSize };
+           using var pb = new VulkanBuffer(_ctx, (ulong)Marshal.SizeOf<FrequencyParams>(), BufferUsageFlags.UniformBufferBit, MemoryPropertyFlags.HostVisibleBit);
+           pb.SetData(new[] { freqParams });
+           Console.WriteLine($"║       ✓ Parameter buffer created (TileSize={tileSize})");
+
+           Console.WriteLine($"║ [4/9] Beginning command buffer...");
+           var cmd = _ctx.BeginSingleTimeCommands();
+           Console.WriteLine($"║       ✓ Command buffer created");
+
+           Console.WriteLine($"║ [5/9] Transitioning image layouts...");
+           input.TransitionLayout(ImageLayout.General, cmd);
+           output.TransitionLayout(ImageLayout.General, cmd);
+           Console.WriteLine($"║       ✓ Layouts transitioned to General");
+
+           // Create dummy images for unused descriptor bindings (2, 3, 4, 5)
+           // Vulkan requires ALL bindings in a layout to be updated before use
+           using var dummyTex = new VulkanImage(_ctx, 1, 1, Format.R32G32B32A32Sfloat,
+               ImageUsageFlags.SampledBit | ImageUsageFlags.StorageBit);
+           dummyTex.TransitionLayout(ImageLayout.General, cmd);
+
+           Console.WriteLine($"║ [6/9] Setting up descriptors...");
+           var set = _descriptors.Allocate(_frequencyLayout);
+           _descriptors.UpdateBuffer(set, 0, pb.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
+           _descriptors.UpdateImage(set, 1, input.View, ImageLayout.General, DescriptorType.SampledImage); // t1 = RefTexture (input)
+           _descriptors.UpdateImage(set, 2, dummyTex.View, ImageLayout.General, DescriptorType.SampledImage); // t2 = unused (AlignedTexture)
+           _descriptors.UpdateImage(set, 3, dummyTex.View, ImageLayout.General, DescriptorType.SampledImage); // t3 = unused (AuxTexture0)
+           _descriptors.UpdateImage(set, 4, dummyTex.View, ImageLayout.General, DescriptorType.SampledImage); // t4 = unused (AuxTexture1)
+           _descriptors.UpdateImage(set, 5, dummyTex.View, ImageLayout.General, DescriptorType.SampledImage); // t5 = unused (AuxTexture2)
+           _descriptors.UpdateImage(set, 10, output.View, ImageLayout.General, DescriptorType.StorageImage); // u10 = OutputTexture
+           Console.WriteLine($"║       ✓ Descriptors bound:");
+           Console.WriteLine($"║         - Binding 0: UniformBuffer (FrequencyParams)");
+           Console.WriteLine($"║         - Binding 1: SampledImage (input RGBA)");
+           Console.WriteLine($"║         - Bindings 2-5: SampledImage (dummy, unused)");
+           Console.WriteLine($"║         - Binding 10: StorageImage (output FT, double width)");
+
+           Console.WriteLine($"║ [7/9] Binding pipeline...");
+           _kernelForwardFft!.BindPipeline(cmd);
+           _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _kernelForwardFft.PipelineLayout, 0, 1, &set, 0, null);
+           Console.WriteLine($"║       ✓ Pipeline and descriptor sets bound");
+
+           // Dispatch 1 thread per tile. Group size (16,16).
+           uint groupsX = (uint)Math.Ceiling((double)nTilesX / 16.0);
+           uint groupsY = (uint)Math.Ceiling((double)nTilesY / 16.0);
+           uint totalGroups = groupsX * groupsY;
+           uint totalThreads = groupsX * groupsY * 16 * 16;
+
+           Console.WriteLine($"║ [8/9] Dispatching compute shader:");
+           Console.WriteLine($"║       Workgroups: {groupsX}x{groupsY} = {totalGroups} groups");
+           Console.WriteLine($"║       Threads: {groupsX * 16}x{groupsY * 16} = {totalThreads} threads");
+           Console.WriteLine($"║       Active threads (within bounds): {nTilesX}x{nTilesY} = {nTilesX * nTilesY}");
+           Console.WriteLine($"║       Workgroup size: 16x16x1 = 256 threads/group");
+
+           Console.WriteLine($"║       >>> DISPATCHING NOW <<<");
+           _kernelForwardFft.Dispatch(cmd, groupsX, groupsY, 1);
+           Console.WriteLine($"║       ✓ Dispatch command recorded");
+
+           // CRITICAL: Add memory barrier to ensure shader writes are visible before readback
+           // This barrier ensures the compute shader's writes to OutputTexture are complete
+           // and visible to subsequent transfer operations (like GetData's CmdCopyImageToBuffer)
+           Console.WriteLine($"║       Adding memory barrier for shader write visibility...");
+           var imageBarrier = new ImageMemoryBarrier
+           {
+               SType = StructureType.ImageMemoryBarrier,
+               OldLayout = ImageLayout.General,
+               NewLayout = ImageLayout.General,
+               SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+               DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+               Image = output.Handle,
+               SubresourceRange = new ImageSubresourceRange
+               {
+                   AspectMask = ImageAspectFlags.ColorBit,
+                   BaseMipLevel = 0,
+                   LevelCount = 1,
+                   BaseArrayLayer = 0,
+                   LayerCount = 1
+               },
+               SrcAccessMask = AccessFlags.ShaderWriteBit,
+               DstAccessMask = AccessFlags.ShaderReadBit | AccessFlags.TransferReadBit | AccessFlags.MemoryReadBit
+           };
+           _ctx.Vk.CmdPipelineBarrier(cmd,
+               PipelineStageFlags.ComputeShaderBit,
+               PipelineStageFlags.ComputeShaderBit | PipelineStageFlags.TransferBit | PipelineStageFlags.HostBit,
+               0, 0, null, 0, null, 1, &imageBarrier);
+           Console.WriteLine($"║       ✓ Memory barrier added");
+
+           Console.WriteLine($"║ [9/9] Executing command buffer and waiting for completion...");
+           _ctx.EndSingleTimeCommands(cmd);
+           Console.WriteLine($"║       ✓ GPU execution COMPLETE (QueueWaitIdle returned)");
+
+           Console.WriteLine($"╠════════════════════════════════════════════════════════════════");
+           Console.WriteLine($"║ [FFT DEBUG] ExecuteForwardFft EXIT - SUCCESS");
+           Console.WriteLine($"╚════════════════════════════════════════════════════════════════\n");
+       }
+       catch (Exception ex)
+       {
+           Console.WriteLine($"║");
+           Console.WriteLine($"╠════════════════════════════════════════════════════════════════");
+           Console.WriteLine($"║ ❌ EXCEPTION in ExecuteForwardFft:");
+           Console.WriteLine($"║ Type: {ex.GetType().Name}");
+           Console.WriteLine($"║ Message: {ex.Message}");
+           Console.WriteLine($"║ Stack: {ex.StackTrace}");
+           Console.WriteLine($"╚════════════════════════════════════════════════════════════════\n");
+           throw;
+       }
     }
 
     private void ExecuteCopyImage(VulkanImage src, VulkanImage dst, int width, int height)

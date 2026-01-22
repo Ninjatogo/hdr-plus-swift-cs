@@ -51,6 +51,8 @@ Texture2D<float4> AuxTexture2    : register(t5); // Highlights
 
 // Outputs
 [[vk::binding(10, 0)]]
+// NOTE: image_format attribute removed - requires ShaderStorageImageWriteWithoutFormat feature instead
+// [[vk::image_format("rgba32f")]]  // This causes DXC compilation errors on some systems
 RWTexture2D<float4> OutputTexture : register(u10);
 
 // -------------------------------------------------------------------------
@@ -153,6 +155,28 @@ void forward_fft_impl(int ts, uint3 gid, RWTexture2D<float4> outFT, Texture2D<fl
 [numthreads(16, 16, 1)]
 void forward_fft(uint3 DTid : SV_DispatchThreadID)
 {
+    // Bounds check: Ensure thread ID corresponds to a valid tile
+    // RefTexture is the input RGBA texture (width × height)
+    // OutputTexture is 2x width for complex number storage (2*width × height)
+    uint inputWidth, inputHeight;
+    RefTexture.GetDimensions(inputWidth, inputHeight);
+
+    uint outputWidth, outputHeight;
+    OutputTexture.GetDimensions(outputWidth, outputHeight);
+
+    // Calculate tile grid based on INPUT dimensions (RGBA texture)
+    int nTilesX = inputWidth / TileSize;
+    int nTilesY = inputHeight / TileSize;
+
+    // Bounds check: verify thread is within tile grid
+    if (DTid.x >= (uint)nTilesX || DTid.y >= (uint)nTilesY)
+        return;
+
+    // Additional safety check: verify output texture is correctly sized (2x input width)
+    // This catches configuration errors early
+    if (outputWidth != inputWidth * 2 || outputHeight != inputHeight)
+        return;
+
     forward_fft_impl(TileSize, DTid, OutputTexture, RefTexture);
 }
 
@@ -163,13 +187,24 @@ void forward_fft(uint3 DTid : SV_DispatchThreadID)
 void backward_fft(uint3 DTid : SV_DispatchThreadID)
 {
     // Bounds check: Ensure thread ID corresponds to a valid tile
-    uint width, height;
-    RefTexture.GetDimensions(width, height);
-    int nTilesX = (width / 2) / TileSize;  // RefTexture has double width for complex numbers
-    int nTilesY = height / TileSize;
+    // For backward FFT: RefTexture has DOUBLE width (complex storage), OutputTexture is single width
+    uint inputWidth, inputHeight;
+    RefTexture.GetDimensions(inputWidth, inputHeight);
 
-    if (DTid.x >= nTilesX || DTid.y >= nTilesY)
-        return; // Skip out-of-bounds threads
+    uint outputWidth, outputHeight;
+    OutputTexture.GetDimensions(outputWidth, outputHeight);
+
+    // Calculate tile grid based on OUTPUT dimensions (single-width RGBA)
+    int nTilesX = outputWidth / TileSize;
+    int nTilesY = outputHeight / TileSize;
+
+    // Bounds check: verify thread is within tile grid
+    if (DTid.x >= (uint)nTilesX || DTid.y >= (uint)nTilesY)
+        return;
+
+    // Additional safety check: verify input texture is correctly sized (2x output width)
+    if (inputWidth != outputWidth * 2 || inputHeight != outputHeight)
+        return;
 
     uint2 gid = DTid.xy;
     int ts = TileSize;

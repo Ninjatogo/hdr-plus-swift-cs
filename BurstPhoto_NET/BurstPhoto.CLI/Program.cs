@@ -30,7 +30,16 @@ public class Program
         {
             try
             {
-                var ctx = new VulkanContext();
+                // Check for GPU preference from environment variable
+                int? gpuIndex = null;
+                string? gpuEnv = Environment.GetEnvironmentVariable("BURSTPHOTO_GPU");
+                if (!string.IsNullOrEmpty(gpuEnv) && int.TryParse(gpuEnv, out int envGpuIndex))
+                {
+                    gpuIndex = envGpuIndex;
+                    Console.WriteLine($"[INFO] Using GPU index {gpuIndex} from BURSTPHOTO_GPU environment variable");
+                }
+
+                var ctx = new VulkanContext(gpuIndex);
                 return new VulkanComputePipeline(ctx);
             }
             catch (Exception ex)
