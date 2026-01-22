@@ -254,6 +254,8 @@ public unsafe class VulkanImage : IDisposable
             Format.R16Sfloat => 2,
             Format.R16G16Sfloat => 4,
             Format.R16G16B16A16Sfloat => 8,
+            Format.R16G16B16A16Sint => 8,  // 4 x 16-bit signed integers
+            Format.R16Uint => 2,
             Format.R8Unorm => 1,
             Format.R8G8B8A8Unorm => 4,
             _ => throw new NotSupportedException($"Format {Format} not supported for GetData")

@@ -114,6 +114,7 @@ void crop_texture(uint3 DTid : SV_DispatchThreadID)
 void convert_to_rgba(uint3 DTid : SV_DispatchThreadID)
 {
     uint2 gid = DTid.xy;
+    
     // Apply padding offset to skip the padded border and read from actual image data
     // Swift uses: x = gid.x*2 + crop_x, y = gid.y*2 + crop_y
     uint2 inPos = uint2(gid.x * 2 + PadLeft, gid.y * 2 + PadTop);

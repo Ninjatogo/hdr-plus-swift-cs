@@ -242,20 +242,26 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         // 5b. Alignment Pyramid
         Console.WriteLine("[VulkanComputePipeline] Generating Alignment Pyramid...");
         var pyramid = new List<VulkanImage>();
-        pyramid.Add(preparedTexture); // Level 0
         
-        int currentW = (int)preparedTexture.Width;
-        int currentH = (int)preparedTexture.Height;
+        // Level 0: Downsampled from preparedTexture by 2
+        int l0W = (int)preparedTexture.Width / 2;
+        int l0H = (int)preparedTexture.Height / 2;
+        if (l0W % 2 != 0) l0W++;
+        if (l0H % 2 != 0) l0H++;
         
-        // Create 3 more levels (Scale 2 each time) -> 0, 1, 2, 3
+        var level0 = new VulkanImage(_ctx, (uint)l0W, (uint)l0H, Format.R32Sfloat, 
+             ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
+        ExecuteAvgPool(preparedTexture, level0, 2, refImage);
+        pyramid.Add(level0);
+        
+        int currentW = l0W;
+        int currentH = l0H;
+        
+        // Create 3 more levels
         for (int i = 1; i < 4; i++)
         {
-            int nextW = currentW / 2;
-            int nextH = currentH / 2;
-            
-            // Ensure even?
-            if (nextW % 2 != 0) nextW++;
-            if (nextH % 2 != 0) nextH++;
+            int nextW = currentW / 2; if (nextW % 2 != 0) nextW++;
+            int nextH = currentH / 2; if (nextH % 2 != 0) nextH++;
             
             var levelImg = new VulkanImage(_ctx, (uint)nextW, (uint)nextH, Format.R32Sfloat, 
                 ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
@@ -270,7 +276,8 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         var disposables = new List<IDisposable>();
         
         Console.WriteLine("[VulkanComputePipeline] Starting Alignment Search...");
-        var tileInfo = TileInfo.Calculate(width, height, ProcessingOptions.GetTileSizePixels(options.TileSize), ProcessingOptions.GetSearchDistancePixels(options.SearchDistance));
+        // Calculate TileInfo based on Level 0 dimensions (Half Resolution)
+        var tileInfo = TileInfo.Calculate(width / 2, height / 2, ProcessingOptions.GetTileSizePixels(options.TileSize), ProcessingOptions.GetSearchDistancePixels(options.SearchDistance));
         
         // Accumulators
         VulkanImage? pixelAccum = null;
@@ -384,7 +391,8 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                 using var rgbaRefTexture = new VulkanImage(_ctx, (uint)rgbaWidth, (uint)rgbaHeight, Format.R32G32B32A32Sfloat,
                     ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
                 Console.WriteLine($"[DEBUG] Iteration {iteration}: Converting reference to RGBA...");
-                ExecuteConvertToRgba(preparedRef, rgbaRefTexture, refImage.CfaPattern, cropMergeX, cropMergeY);
+                // Reference uses padLeft/padTop since that's where prepare placed the data
+                ExecuteConvertToRgba(preparedRef, rgbaRefTexture, refImage.CfaPattern, padLeft, padTop);
 
                 // DEBUG: Check RGBA conversion output (sample from middle)
                 {
@@ -397,9 +405,19 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                     if (rgbaSum < 0.01) Console.WriteLine($"[WARNING] RGBA conversion produced near-zero output!");
                 }
 
-                // Build reference pyramid
-                var refPyramid = new List<VulkanImage> { preparedRef };
-                int currW = iterOutWidth, currH = iterOutHeight;
+                // Build reference pyramid (Frequency Loop)
+                var refPyramid = new List<VulkanImage>();
+                int l0RefW = (int)preparedRef.Width / 2;
+                int l0RefH = (int)preparedRef.Height / 2;
+                if (l0RefW % 2 != 0) l0RefW++;
+                if (l0RefH % 2 != 0) l0RefH++;
+                
+                var refLevel0 = new VulkanImage(_ctx, (uint)l0RefW, (uint)l0RefH, Format.R32Sfloat,
+                    ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
+                ExecuteAvgPool(preparedRef, refLevel0, 2, refImage);
+                refPyramid.Add(refLevel0);
+                
+                int currW = l0RefW, currH = l0RefH;
                 for (int lvl = 1; lvl < 4; lvl++)
                 {
                     int nW = currW / 2; if (nW % 2 != 0) nW++;
@@ -469,9 +487,19 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                     // TODO: ExecutePrepare needs exposure bias parameter
                     ExecutePrepare(rawAlt, preparedAlt, altImage, padLeft, padTop);
 
-                    // Build comparison pyramid
-                    var altPyramid = new List<VulkanImage> { preparedAlt };
-                    currW = iterOutWidth; currH = iterOutHeight;
+                    // Build comparison pyramid (Frequency Loop)
+                    var altPyramid = new List<VulkanImage>();
+                    int l0AltW = (int)preparedAlt.Width / 2;
+                    int l0AltH = (int)preparedAlt.Height / 2;
+                    if (l0AltW % 2 != 0) l0AltW++;
+                    if (l0AltH % 2 != 0) l0AltH++;
+                    
+                    var altLevel0 = new VulkanImage(_ctx, (uint)l0AltW, (uint)l0AltH, Format.R32Sfloat,
+                        ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
+                    ExecuteAvgPool(preparedAlt, altLevel0, 2, altImage);
+                    altPyramid.Add(altLevel0);
+                    
+                    currW = l0AltW; currH = l0AltH;
                     for (int lvl = 1; lvl < 4; lvl++)
                     {
                         int nW = currW / 2; if (nW % 2 != 0) nW++;
@@ -490,6 +518,25 @@ public unsafe class VulkanComputePipeline : IComputePipeline
 
                     using var warpedAlt = new VulkanImage(_ctx, (uint)iterOutWidth, (uint)iterOutHeight, Format.R32Sfloat,
                         ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
+                    
+                    // DEBUG: Check preparedAlt BEFORE warp
+                    {
+                        float[] prepAltData = preparedAlt.GetData<float>();
+                        int dataStartIdx = padTop * iterOutWidth + padLeft;
+                        double prepAltSum = 0;
+                        int samples = Math.Min(1000, prepAltData.Length - dataStartIdx);
+                        if (dataStartIdx >= 0 && dataStartIdx < prepAltData.Length)
+                        {
+                            for (int idx = 0; idx < samples; idx++) 
+                                prepAltSum += Math.Abs(prepAltData[dataStartIdx + idx]);
+                        }
+                        Console.WriteLine($"[WARP DEBUG] preparedAlt BEFORE warp (at data region): sum={prepAltSum:F2}, mean={prepAltSum/samples:F4}");
+                        if (prepAltSum < 0.01)
+                        {
+                            Console.WriteLine($"[WARP DEBUG] ❌ ERROR: preparedAlt is EMPTY before warp!");
+                        }
+                    }
+                    
                     ExecuteWarp(preparedAlt, warpedAlt, alignment, tileInfo);
 
                     // DEBUG: Check warpedAlt before RGBA conversion
@@ -498,12 +545,29 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                         double warpSum = 0;
                         int warpSamples = Math.Min(warpData.Length, 1000);
                         for (int i = 0; i < warpSamples; i++) warpSum += Math.Abs(warpData[i]);
-                        Console.WriteLine($"[WARP DEBUG] warpedAlt BEFORE convert: sum={warpSum:F2}, mean={warpSum/warpSamples:F4}");
+                        
+                        // Also check at the data region offset
+                        int dataStartIdx = padTop * iterOutWidth + padLeft;
+                        double warpDataSum = 0;
+                        int samples = Math.Min(1000, warpData.Length - dataStartIdx);
+                        if (dataStartIdx >= 0 && dataStartIdx < warpData.Length)
+                        {
+                            for (int idx = 0; idx < samples; idx++) 
+                                warpDataSum += Math.Abs(warpData[dataStartIdx + idx]);
+                        }
+                        
+                        Console.WriteLine($"[WARP DEBUG] warpedAlt AFTER warp (first 1000): sum={warpSum:F2}, mean={warpSum/warpSamples:F4}");
+                        Console.WriteLine($"[WARP DEBUG] warpedAlt AFTER warp (at data region): sum={warpDataSum:F2}, mean={warpDataSum/samples:F4}");
+                        if (warpSum < 0.01 && warpDataSum < 0.01)
+                        {
+                            Console.WriteLine($"[WARP DEBUG] ❌ ERROR: warpedAlt is EMPTY after warp!");
+                        }
                     }
 
                     using var alignedTextureRgba = new VulkanImage(_ctx, (uint)rgbaWidth, (uint)rgbaHeight, Format.R32G32B32A32Sfloat,
                         ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
-                    ExecuteConvertToRgba(warpedAlt, alignedTextureRgba, refImage.CfaPattern, cropMergeX, cropMergeY);
+                    // Comparison uses padLeft/padTop - same as reference since warp preserves data location
+                    ExecuteConvertToRgba(warpedAlt, alignedTextureRgba, refImage.CfaPattern, padLeft, padTop);
 
                     // DEBUG: Check alignedTextureRgba after RGBA conversion
                     {
@@ -711,12 +775,20 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                     ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
                  ExecutePrepare(rawAlt, preparedAlt, altImage, pad, pad);
 
-                 // 3. Pyramid Alternate
+                 // 3. Pyramid Alternate (Spatial Loop)
                  var altPyramid = new List<VulkanImage>();
-                 altPyramid.Add(preparedAlt);
+                 
+                 int l0AltSW = (int)preparedAlt.Width / 2;
+                 int l0AltSH = (int)preparedAlt.Height / 2;
+                 if (l0AltSW % 2 != 0) l0AltSW++;
+                 if (l0AltSH % 2 != 0) l0AltSH++;
+                 
+                 var altLevel0S = new VulkanImage(_ctx, (uint)l0AltSW, (uint)l0AltSH, Format.R32Sfloat, ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
+                 ExecuteAvgPool(preparedAlt, altLevel0S, 2, altImage);
+                 altPyramid.Add(altLevel0S);
 
-                 int currW = (int)preparedAlt.Width;
-                 int currH = (int)preparedAlt.Height;
+                 int currW = l0AltSW;
+                 int currH = l0AltSH;
                  for (int val = 1; val < 4; val++)
                  {
                     int nW = currW / 2; if (nW % 2 != 0) nW++;
@@ -995,6 +1067,18 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         var warpSpirv = _compiler.Compile(sourceWarp, "CSMain");
         // [numthreads(16, 16, 1)]
         _kernelWarp = new ComputeKernel(_ctx, _alignLayout, warpSpirv, "CSMain", 16, 16, 1);
+
+        // upsample_alignment
+        string sourceUpsample = source.Replace("void upsample_alignment(", "void CSMain(");
+        var upsampleSpirv = _compiler.Compile(sourceUpsample, "CSMain");
+        // [numthreads(16, 16, 1)]
+        _kernelUpsampleAlignment = new ComputeKernel(_ctx, _alignLayout, upsampleSpirv, "CSMain", 16, 16, 1);
+
+        // correct_upsampling_error
+        string sourceCorrect = source.Replace("void correct_upsampling_error(", "void CSMain(");
+        var correctSpirv = _compiler.Compile(sourceCorrect, "CSMain");
+        // [numthreads(16, 16, 1)]
+        _kernelCorrectUpsamplingError = new ComputeKernel(_ctx, _alignLayout, correctSpirv, "CSMain", 16, 16, 1);
     }
 
     private void EnsureMergePipeline()
@@ -1701,6 +1785,37 @@ public unsafe class VulkanComputePipeline : IComputePipeline
     {
         EnsureConversionPipeline();
 
+        // === PRE-SHADER DATA VALIDATION ===
+        // Read input texture BEFORE any GPU operations to verify data is valid
+        {
+            float[] inputData = bayerInput.GetData<float>();
+            int sampleCount = Math.Min(inputData.Length, 1000);
+            double inputSum = 0;
+            for (int i = 0; i < sampleCount; i++) inputSum += Math.Abs(inputData[i]);
+            
+            // Also sample from the expected data region (after cropX/cropY offset)
+            int dataStartIdx = cropY * (int)bayerInput.Width + cropX;
+            double dataRegionSum = 0;
+            int dataRegionSamples = Math.Min(1000, inputData.Length - dataStartIdx);
+            if (dataStartIdx >= 0 && dataStartIdx < inputData.Length)
+            {
+                for (int i = 0; i < dataRegionSamples; i++) 
+                    dataRegionSum += Math.Abs(inputData[dataStartIdx + i]);
+            }
+            
+            Console.WriteLine($"[CONVERT_RGBA] === PRE-SHADER VALIDATION ===");
+            Console.WriteLine($"[CONVERT_RGBA] Input: {bayerInput.Width}x{bayerInput.Height}, Output: {rgbaOutput.Width}x{rgbaOutput.Height}");
+            Console.WriteLine($"[CONVERT_RGBA] CropX={cropX}, CropY={cropY}");
+            Console.WriteLine($"[CONVERT_RGBA] Input data (first {sampleCount}): sum={inputSum:F2}, mean={inputSum/sampleCount:F4}");
+            Console.WriteLine($"[CONVERT_RGBA] Input data (at offset cropY*W+cropX): sum={dataRegionSum:F2}, mean={dataRegionSum/dataRegionSamples:F4}");
+            Console.WriteLine($"[CONVERT_RGBA] Input layout before transition: {bayerInput.CurrentLayout}");
+            
+            if (inputSum < 0.01 && dataRegionSum < 0.01)
+            {
+                Console.WriteLine($"[CONVERT_RGBA] ❌ ERROR: Input texture is EMPTY before shader execution!");
+            }
+        }
+
         // Determine CFA pattern index (simplified: use first element as indicator)
         int cfaIndex = 0;
         if (cfaPattern.Length >= 4)
@@ -1718,6 +1833,8 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         using var paramBuffer = new VulkanBuffer(_ctx, (ulong)Marshal.SizeOf<TextureParams>(),
             BufferUsageFlags.UniformBufferBit, MemoryPropertyFlags.HostVisibleBit);
         paramBuffer.SetData(new[] { texParams });
+        
+        Console.WriteLine($"[CONVERT_RGBA] TextureParams: CfaPattern={cfaIndex}, PadLeft={cropX}, PadTop={cropY}");
 
         // Dummy textures for unused bindings
         using var dummyRgba = new VulkanImage(_ctx, 1, 1, Format.R32G32B32A32Sfloat, ImageUsageFlags.SampledBit | ImageUsageFlags.StorageBit);
@@ -1989,186 +2106,338 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         _ctx.Vk.FreeCommandBuffers(_ctx.Device, _ctx.CommandPool, 1, in cmdBuffer);
     }
 
-    private void ExecuteAlignmentSearch(List<VulkanImage> refPyramid, List<VulkanImage> compPyramid, VulkanImage alignmentOut, TileInfo tileInfo, int scale)
+    private void ExecuteAlignmentSearch(List<VulkanImage> refPyramid, List<VulkanImage> compPyramid, VulkanImage alignmentOut, TileInfo baseTileInfo, int scale)
     {
         EnsureAlignPipeline();
         
-         var alignParams = new AlignParams
+        int numLevels = Math.Min(refPyramid.Count, compPyramid.Count);
+        
+        Console.WriteLine($"[Align] ExecuteAlignmentSearch: Levels={numLevels}, BaseTileSize={baseTileInfo.TileSize}");
+        
+        // Calculate tile sizes for each level
+        // Level 0: baseTileInfo.TileSize
+        // Level 1: max(Level0/2, 8)
+        int[] tileSizes = new int[numLevels];
+        tileSizes[0] = baseTileInfo.TileSize;
+        for(int i=1; i<numLevels; i++)
         {
-            Scale = 1, // Not used for these kernels
-            BlackLevel = 0.0f,
-            FactorRed = 1.0f, FactorGreen = 1.0f, FactorBlue = 1.0f,
-            
-            DownscaleFactor = 1, // Assuming usually 1 or 2 depending on pass
-            TileSize = tileInfo.TileSize, 
-            SearchDist = tileInfo.SearchDist, 
-            WeightSSD = 1, // WeightSSD usually high?
-            
-            HalfTileSize = tileInfo.TileSize / 2,
-            NumTilesX = tileInfo.NTilesX,
-            NumTilesY = tileInfo.NTilesY,
-            UniformExposure = 0
-        };
+             tileSizes[i] = Math.Max(tileSizes[i-1]/2, 8);
+        }
         
-        int nPos2D = tileInfo.NPos2D;
+        VulkanImage? prevAlignment = null;
         
-        using var tileDiff = new VulkanImage(_ctx, (uint)tileInfo.NTilesX, (uint)tileInfo.NTilesY, (uint)nPos2D, Format.R32Sfloat, 
-             ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit, ImageViewType.Type3D);
+        // Loop from coarsest to finest
+        for (int level = numLevels - 1; level >= 0; level--)
+        {
+            var refLayer = refPyramid[level];
+            var compLayer = compPyramid[level];
+            int tileSize = tileSizes[level];
+            int searchDist = 2; // Always 2 for pyramid search
+            
+            // Calculate tile grid dimensions for this level
+            // Formula: width / (tileSize/2) - 1
+            int nTilesX = (int)refLayer.Width / (tileSize / 2) - 1;
+            int nTilesY = (int)refLayer.Height / (tileSize / 2) - 1;
+            
+            if (nTilesX < 1) nTilesX = 1;
+            if (nTilesY < 1) nTilesY = 1;
+            
+            Console.WriteLine($"[Align] Level {level}: {refLayer.Width}x{refLayer.Height}, TileSize={tileSize}, Grid={nTilesX}x{nTilesY}");
+            
+            // Determine Output Image for this level
+            VulkanImage currentAlignment;
+            bool isLastLevel = (level == 0);
+            
+            if (isLastLevel)
+            {
+                currentAlignment = alignmentOut; // Use final output 
+            }
+            else
+            {
+                // Allocate temp alignment for this level
+                currentAlignment = new VulkanImage(_ctx, (uint)nTilesX, (uint)nTilesY, Format.R16G16B16A16Sint, ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit);
+            }
+            
+            // We need a command buffer for this level's operations
+            // We'll execute one CB per level to simplify barriers and resource management
+            
+            var allocInfo = new CommandBufferAllocateInfo { SType = StructureType.CommandBufferAllocateInfo, Level = CommandBufferLevel.Primary, CommandPool = _ctx.CommandPool, CommandBufferCount = 1 };
+            _ctx.Vk.AllocateCommandBuffers(_ctx.Device, in allocInfo, out var cmdBuffer);
+            var beginInfo = new CommandBufferBeginInfo { SType = StructureType.CommandBufferBeginInfo, Flags = CommandBufferUsageFlags.OneTimeSubmitBit };
+            _ctx.Vk.BeginCommandBuffer(cmdBuffer, in beginInfo);
+            
+            // Function-scope Disposables
+            var levelDisposables = new List<IDisposable>();
+            
+            // 1. Prepare "Previous Alignment" for this level
+            // If Level == Max (Coarsest), create Zero alignment.
+            // If Level < Max, Upsample prevAlignment from (Level+1).
+            
+            VulkanImage prevAlignmentForStep; // The input to correction step
+            
+            if (prevAlignment == null)
+            {
+                // Coarsest Level: Create Zeros
+                var zeroAlign = new VulkanImage(_ctx, (uint)nTilesX, (uint)nTilesY, Format.R16G16B16A16Sint, ImageUsageFlags.SampledBit | ImageUsageFlags.StorageBit);
+                levelDisposables.Add(zeroAlign);
+                
+                int totalTiles = nTilesX * nTilesY;
+                short[] zeros = new short[totalTiles * 4];
+                zeroAlign.SetData(zeros); 
+                zeroAlign.TransitionLayout(ImageLayout.General, cmdBuffer);
+                
+                prevAlignmentForStep = zeroAlign;
+            }
+            else
+            {
+                // Upsample from previous coarser level
+                // Upsampled size must match current level grid (nTilesX, nTilesY)
+                var upsampled = new VulkanImage(_ctx, (uint)nTilesX, (uint)nTilesY, Format.R16G16B16A16Sint, ImageUsageFlags.SampledBit | ImageUsageFlags.StorageBit);
+                levelDisposables.Add(upsampled);
+                
+                prevAlignment.TransitionLayout(ImageLayout.General, cmdBuffer);
+                upsampled.TransitionLayout(ImageLayout.General, cmdBuffer);
+                
+                // Dispatch upsample_alignment
+                var setUp = _descriptors.Allocate(_alignLayout);
+                // upsample uses PrevAlignment(t2) as Input, OutAlignment(u10) as Output
+                // We need dummy buffers for others (AlignParams etc)
+                // Use a dummy params buffer
+                var dummyParams = new AlignParams();
+                using var pBuff = new VulkanBuffer(_ctx, (ulong)Marshal.SizeOf<AlignParams>(), BufferUsageFlags.UniformBufferBit, MemoryPropertyFlags.HostVisibleBit);
+                pBuff.SetData(new[] { dummyParams });
+                
+                using var dummyTex = new VulkanImage(_ctx, 1, 1, Format.R32Sfloat, ImageUsageFlags.SampledBit);
+                dummyTex.TransitionLayout(ImageLayout.General, cmdBuffer);
+                
+                _descriptors.UpdateBuffer(setUp, 0, pBuff.Handle, (ulong)Marshal.SizeOf<AlignParams>(), DescriptorType.UniformBuffer);
+                _descriptors.UpdateImage(setUp, 1, dummyTex.View, ImageLayout.General, DescriptorType.SampledImage);
+                _descriptors.UpdateImage(setUp, 2, dummyTex.View, ImageLayout.General, DescriptorType.SampledImage);
+                _descriptors.UpdateImage(setUp, 3, prevAlignment.View, ImageLayout.General, DescriptorType.SampledImage); // Input
+                _descriptors.UpdateImage(setUp, 10, upsampled.View, ImageLayout.General, DescriptorType.StorageImage);    // Output
+                
+                _kernelUpsampleAlignment!.BindPipeline(cmdBuffer);
+                _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, _kernelUpsampleAlignment.PipelineLayout, 0, 1, &setUp, 0, null);
+                
+                // Dispatch over OUTPUT size
+                uint gX = (uint)Math.Ceiling(nTilesX / 16.0);
+                uint gY = (uint)Math.Ceiling(nTilesY / 16.0);
+                _kernelUpsampleAlignment.Dispatch(cmdBuffer, gX, gY, 1);
+                
+                // Barrier
+                var barrier = new MemoryBarrier { SType = StructureType.MemoryBarrier, SrcAccessMask = AccessFlags.ShaderWriteBit, DstAccessMask = AccessFlags.ShaderReadBit };
+                _ctx.Vk.CmdPipelineBarrier(cmdBuffer, PipelineStageFlags.ComputeShaderBit, PipelineStageFlags.ComputeShaderBit, 0, 1, &barrier, 0, null, 0, null);
+                
+                prevAlignmentForStep = upsampled;
+            }
+            
+            // 2. Correct Upsampling Error (or refine zeros)
+            // Reads prevAlignmentForStep, writes to "corrected"
+            // We need a temp texture for "Corrected"
+            var corrected = new VulkanImage(_ctx, (uint)nTilesX, (uint)nTilesY, Format.R16G16B16A16Sint, ImageUsageFlags.SampledBit | ImageUsageFlags.StorageBit);
+            levelDisposables.Add(corrected);
+            corrected.TransitionLayout(ImageLayout.General, cmdBuffer);
+            
+            // Params
+            int downscaleFactor = 2; // For alignment, each level is 2x scale relative to next?
+            // Actually, in Swift `downscale_factors` array is [2, 2, 2...]
+            // The `DownscaleFactor` param in shader scales the vector values.
+            // If we are at level L, and vector is from L+1 (upsampled), the vector value (pixels) is in L+1 units.
+            // To convert to L units, we mul by 2.
+            // But if it's Level Max (zeros), factor doesn't matter (0*2=0).
+            // Yes, use 2.
+            
+            var alignParams = new AlignParams
+            {
+                TileSize = tileSize,
+                DownscaleFactor = 2, 
+                NumTilesX = nTilesX,
+                NumTilesY = nTilesY,
+                UniformExposure = 0,
+                // Others unused by correct_upsampling
+            };
+            
+            using var paramBuffer = new VulkanBuffer(_ctx, (ulong)Marshal.SizeOf<AlignParams>(), BufferUsageFlags.UniformBufferBit, MemoryPropertyFlags.HostVisibleBit);
+            paramBuffer.SetData(new[] { alignParams });
+            
+            refLayer.TransitionLayout(ImageLayout.General, cmdBuffer);
+            compLayer.TransitionLayout(ImageLayout.General, cmdBuffer);
+            
+            var setCorrect = _descriptors.Allocate(_alignLayout);
+            _descriptors.UpdateBuffer(setCorrect, 0, paramBuffer.Handle, (ulong)Marshal.SizeOf<AlignParams>(), DescriptorType.UniformBuffer);
+            _descriptors.UpdateImage(setCorrect, 1, refLayer.View, ImageLayout.General, DescriptorType.SampledImage); // Ref
+            _descriptors.UpdateImage(setCorrect, 2, compLayer.View, ImageLayout.General, DescriptorType.SampledImage); // Comp
+            _descriptors.UpdateImage(setCorrect, 3, prevAlignmentForStep.View, ImageLayout.General, DescriptorType.SampledImage); // Prev
+            _descriptors.UpdateImage(setCorrect, 10, corrected.View, ImageLayout.General, DescriptorType.StorageImage); // Output (PrevCorrected)
+            
+            _kernelCorrectUpsamplingError!.BindPipeline(cmdBuffer);
+            _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, _kernelCorrectUpsamplingError.PipelineLayout, 0, 1, &setCorrect, 0, null);
+            
+            uint gXC = (uint)Math.Ceiling(nTilesX / 16.0);
+            uint gYC = (uint)Math.Ceiling(nTilesY / 16.0);
+            _kernelCorrectUpsamplingError.Dispatch(cmdBuffer, gXC, gYC, 1);
+            
+            // Barrier
+            var barrier2 = new MemoryBarrier { SType = StructureType.MemoryBarrier, SrcAccessMask = AccessFlags.ShaderWriteBit, DstAccessMask = AccessFlags.ShaderReadBit };
+            _ctx.Vk.CmdPipelineBarrier(cmdBuffer, PipelineStageFlags.ComputeShaderBit, PipelineStageFlags.ComputeShaderBit, 0, 1, &barrier2, 0, null, 0, null);
+            
+            // 3. Compute Tile Differences
+            // Reads: Ref, Comp, Corrected(as Prev). Writes: TileDiff.
+            // SearchDist = 2 -> nPos2D = 25.
+            int nPos2D = 25;
+            
+            var tileDiff = new VulkanImage(_ctx, (uint)nTilesX, (uint)nTilesY, (uint)nPos2D, Format.R32Sfloat, ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit, ImageViewType.Type3D);
+            levelDisposables.Add(tileDiff);
+            tileDiff.TransitionLayout(ImageLayout.General, cmdBuffer);
+            
+            // Update params if needed (SearchDist)
+            alignParams.SearchDist = 2;
+            alignParams.WeightSSD = 1; // Default
+            paramBuffer.SetData(new[] { alignParams }); // Update buffer content
+            
+            var setDiff = _descriptors.Allocate(_alignLayout);
+            _descriptors.UpdateBuffer(setDiff, 0, paramBuffer.Handle, (ulong)Marshal.SizeOf<AlignParams>(), DescriptorType.UniformBuffer);
+            _descriptors.UpdateImage(setDiff, 1, refLayer.View, ImageLayout.General, DescriptorType.SampledImage);
+            _descriptors.UpdateImage(setDiff, 2, compLayer.View, ImageLayout.General, DescriptorType.SampledImage);
+            _descriptors.UpdateImage(setDiff, 3, corrected.View, ImageLayout.General, DescriptorType.SampledImage); // Use CORRECTED as prev
+            _descriptors.UpdateImage(setDiff, 10, tileDiff.View, ImageLayout.General, DescriptorType.StorageImage);
+            
+            // Optimized kernel (25)
+            // Use _kernelTileDiff25 or _kernelTileDiffExposure25
+            var kernelDiff = _kernelTileDiff25!; // Assuming uniform exposure for now
+            kernelDiff.BindPipeline(cmdBuffer);
+            _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, kernelDiff.PipelineLayout, 0, 1, &setDiff, 0, null);
+            
+            kernelDiff.Dispatch(cmdBuffer, gXC, gYC, 1);
+            
+            // Barrier
+            _ctx.Vk.CmdPipelineBarrier(cmdBuffer, PipelineStageFlags.ComputeShaderBit, PipelineStageFlags.ComputeShaderBit, 0, 1, &barrier2, 0, null, 0, null);
+            
+            // 4. Find Best Alignment
+            // Reads: TileDiff, Corrected(as Prev). Writes: currentAlignment.
+            
+            if (isLastLevel)
+            {
+                alignmentOut.TransitionLayout(ImageLayout.General, cmdBuffer);
+            }
+            else
+            {
+                currentAlignment.TransitionLayout(ImageLayout.General, cmdBuffer);
+            }
+            
+            var setFind = _descriptors.Allocate(_alignLayout);
+            _descriptors.UpdateBuffer(setFind, 0, paramBuffer.Handle, (ulong)Marshal.SizeOf<AlignParams>(), DescriptorType.UniformBuffer);
+            _descriptors.UpdateImage(setFind, 1, tileDiff.View, ImageLayout.General, DescriptorType.SampledImage);
+            
+             using var dummyComp2 = new VulkanImage(_ctx, 1, 1, Format.R32Sfloat, ImageUsageFlags.SampledBit);
+             dummyComp2.TransitionLayout(ImageLayout.General, cmdBuffer);
+             _descriptors.UpdateImage(setFind, 2, dummyComp2.View, ImageLayout.General, DescriptorType.SampledImage); // Dummy
              
-        using var paramBuffer = new VulkanBuffer(_ctx, (ulong)Marshal.SizeOf<AlignParams>(), 
-            BufferUsageFlags.UniformBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
-        paramBuffer.SetData(new[] { alignParams });     
-        
-        // prevAlignment usually from coarser level. For coarsest level (or test), use 0.
-        using var dummyPrev = new VulkanImage(_ctx, (uint)tileInfo.NTilesX, (uint)tileInfo.NTilesY, Format.R16G16B16A16Sint, ImageUsageFlags.SampledBit | ImageUsageFlags.StorageBit);
-        int totalTiles = tileInfo.NTilesX * tileInfo.NTilesY;
-        short[] zeroAlign = new short[totalTiles * 4]; 
-        dummyPrev.SetData(zeroAlign);
-
-        // Command Buffer
-        var allocInfo = new CommandBufferAllocateInfo
-        {
-            SType = StructureType.CommandBufferAllocateInfo,
-            Level = CommandBufferLevel.Primary,
-            CommandPool = _ctx.CommandPool,
-            CommandBufferCount = 1
-        };
-        _ctx.Vk.AllocateCommandBuffers(_ctx.Device, in allocInfo, out var cmdBuffer);
-        
-        var beginInfo = new CommandBufferBeginInfo { SType = StructureType.CommandBufferBeginInfo, Flags = CommandBufferUsageFlags.OneTimeSubmitBit };
-        _ctx.Vk.BeginCommandBuffer(cmdBuffer, in beginInfo);
-        
-        // Transitions
-        refPyramid[0].TransitionLayout(ImageLayout.General, cmdBuffer); 
-        compPyramid[0].TransitionLayout(ImageLayout.General, cmdBuffer);
-        tileDiff.TransitionLayout(ImageLayout.General, cmdBuffer); 
-        alignmentOut.TransitionLayout(ImageLayout.General, cmdBuffer);
-        dummyPrev.TransitionLayout(ImageLayout.General, cmdBuffer);
-
-        // --- Pass 1: compute_tile_differences ---
-        var setDiff = _descriptors.Allocate(_alignLayout);
-        _descriptors.UpdateBuffer(setDiff, 0, paramBuffer.Handle, (ulong)Marshal.SizeOf<AlignParams>(), DescriptorType.UniformBuffer);
-        _descriptors.UpdateImage(setDiff, 1, refPyramid[0].View, ImageLayout.General, DescriptorType.SampledImage); // Ref
-        _descriptors.UpdateImage(setDiff, 2, compPyramid[0].View, ImageLayout.General, DescriptorType.SampledImage); // Comp
-        _descriptors.UpdateImage(setDiff, 3, dummyPrev.View, ImageLayout.General, DescriptorType.SampledImage); // Prev
-        _descriptors.UpdateImage(setDiff, 10, tileDiff.View, ImageLayout.General, DescriptorType.StorageImage); // TileDiff Out
-        
-        // Select kernel: use optimized 2D dispatch when n_pos_2d == 25 (search_dist=2)
-        bool useOptimized = (nPos2D == 25);
-        bool uniformExposure = (alignParams.UniformExposure != 0);
-        
-        if (useOptimized)
-        {
-            // Use optimized kernel: 2D dispatch over (n_tiles_x, n_tiles_y), each thread computes all 25 differences
-            var kernel = uniformExposure ? _kernelTileDiff25! : _kernelTileDiffExposure25!;
-            kernel.BindPipeline(cmdBuffer);
-            _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, kernel.PipelineLayout, 0, 1, &setDiff, 0, null);
+            _descriptors.UpdateImage(setFind, 3, corrected.View, ImageLayout.General, DescriptorType.SampledImage); // Prev (Corrected)
+            _descriptors.UpdateImage(setFind, 10, currentAlignment.View, ImageLayout.General, DescriptorType.StorageImage); // Output
             
-            uint gX = (uint)Math.Ceiling(tileInfo.NTilesX / 16.0);
-            uint gY = (uint)Math.Ceiling(tileInfo.NTilesY / 16.0);
-            _ctx.Vk.CmdDispatch(cmdBuffer, gX, gY, 1);
+            _kernelFindBest!.BindPipeline(cmdBuffer);
+            _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, _kernelFindBest.PipelineLayout, 0, 1, &setFind, 0, null);
             
-            Console.WriteLine($"[VulkanComputePipeline] Using optimized kernel (n_pos_2d={nPos2D}, uniformExposure={uniformExposure})");
+            _kernelFindBest.Dispatch(cmdBuffer, (uint)nTilesX, (uint)nTilesY, 1);
+            
+            // End CB
+            _ctx.Vk.EndCommandBuffer(cmdBuffer);
+            
+            var submitInfo = new SubmitInfo { SType = StructureType.SubmitInfo, CommandBufferCount = 1, PCommandBuffers = &cmdBuffer };
+            _ctx.Vk.QueueSubmit(_ctx.ComputeQueue, 1, in submitInfo, default);
+            _ctx.Vk.QueueWaitIdle(_ctx.ComputeQueue);
+            
+            _ctx.Vk.FreeCommandBuffers(_ctx.Device, _ctx.CommandPool, 1, in cmdBuffer);
+            
+            // Cleanup
+            foreach(var d in levelDisposables) d.Dispose();
+            
+            // Update prevAlignment for next iteration
+            if (prevAlignment != null && prevAlignment != alignmentOut) prevAlignment.Dispose();
+            prevAlignment = currentAlignment;
         }
-        else
-        {
-            // Use generic kernel: 3D dispatch over (n_tiles_x, n_tiles_y, n_pos_2d)
-            _kernelTileDiff!.BindPipeline(cmdBuffer);
-            _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, _kernelTileDiff.PipelineLayout, 0, 1, &setDiff, 0, null);
-            
-            uint gX = (uint)Math.Ceiling(tileInfo.NTilesX / 8.0);
-            uint gY = (uint)Math.Ceiling(tileInfo.NTilesY / 8.0);
-            uint gZ = (uint)Math.Ceiling(nPos2D / 4.0);
-            _ctx.Vk.CmdDispatch(cmdBuffer, gX, gY, gZ);
-            
-            Console.WriteLine($"[VulkanComputePipeline] Using generic kernel (n_pos_2d={nPos2D})");
-        }
-        
-        // Barrier: TileDiff write -> read
-        var barrier = new MemoryBarrier
-        {
-            SType = StructureType.MemoryBarrier,
-            SrcAccessMask = AccessFlags.ShaderWriteBit,
-            DstAccessMask = AccessFlags.ShaderReadBit
-        };
-        _ctx.Vk.CmdPipelineBarrier(cmdBuffer, PipelineStageFlags.ComputeShaderBit, PipelineStageFlags.ComputeShaderBit, 0, 1, &barrier, 0, null, 0, null);
-
-        // --- Pass 2: find_best_tile_alignment ---
-        var setFind = _descriptors.Allocate(_alignLayout);
-        _descriptors.UpdateBuffer(setFind, 0, paramBuffer.Handle, (ulong)Marshal.SizeOf<AlignParams>(), DescriptorType.UniformBuffer);
-        _descriptors.UpdateImage(setFind, 1, tileDiff.View, ImageLayout.General, DescriptorType.SampledImage); // InTileDiff
-        
-        using var dummyComp = new VulkanImage(_ctx, 1, 1, Format.R32Sfloat, ImageUsageFlags.SampledBit); // Dummy
-        dummyComp.TransitionLayout(ImageLayout.General, cmdBuffer);
-        _descriptors.UpdateImage(setFind, 2, dummyComp.View, ImageLayout.General, DescriptorType.SampledImage);
-        
-        _descriptors.UpdateImage(setFind, 3, dummyPrev.View, ImageLayout.General, DescriptorType.SampledImage); // PrevAlignment
-        _descriptors.UpdateImage(setFind, 10, alignmentOut.View, ImageLayout.General, DescriptorType.StorageImage); // OutAlignment
-        
-        _kernelFindBest!.BindPipeline(cmdBuffer);
-        _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, _kernelFindBest.PipelineLayout, 0, 1, &setFind, 0, null);
-        
-        _kernelFindBest.Dispatch(cmdBuffer, (uint)tileInfo.NTilesX, (uint)tileInfo.NTilesY, 1);
-        
-        _ctx.Vk.EndCommandBuffer(cmdBuffer);
-        
-         var submitInfo = new SubmitInfo
-        {
-            SType = StructureType.SubmitInfo,
-            CommandBufferCount = 1,
-            PCommandBuffers = &cmdBuffer
-        };
-        _ctx.Vk.QueueSubmit(_ctx.ComputeQueue, 1, in submitInfo, default);
-        _ctx.Vk.QueueWaitIdle(_ctx.ComputeQueue);
-        _ctx.Vk.FreeCommandBuffers(_ctx.Device, _ctx.CommandPool, 1, in cmdBuffer);
     }
     
     private void ExecuteWarp(VulkanImage altImage, VulkanImage output, VulkanImage alignment, TileInfo tileInfo)
     {
-         EnsureAlignPipeline();
+        Console.WriteLine($"╔════════════════════════════════════════════════════════════════");
+        Console.WriteLine($"║ [WARP DEBUG] ExecuteWarp CALLED");
+        Console.WriteLine($"╠════════════════════════════════════════════════════════════════");
+        Console.WriteLine($"║ [1/8] Input Configuration:");
+        Console.WriteLine($"║       altImage (input):  {altImage.Width}x{altImage.Height} (format: {altImage.Format})");
+        Console.WriteLine($"║       output:            {output.Width}x{output.Height} (format: {output.Format})");
+        Console.WriteLine($"║       alignment:         {alignment.Width}x{alignment.Height} (format: {alignment.Format})");
+        Console.WriteLine($"║       TileInfo: TileSize={tileInfo.TileSize}, NTilesX={tileInfo.NTilesX}, NTilesY={tileInfo.NTilesY}");
+
+        // Check altImage input data
+        Console.WriteLine($"║ [2/8] Checking input texture data...");
+        {
+            float[] altData = altImage.GetData<float>();
+            double sum1000 = 0, sumMid = 0;
+            int midStart = altData.Length / 2;
+            int samples = Math.Min(1000, altData.Length);
+            for (int i = 0; i < samples; i++) sum1000 += Math.Abs(altData[i]);
+            for (int i = 0; i < samples && midStart + i < altData.Length; i++) sumMid += Math.Abs(altData[midStart + i]);
+            Console.WriteLine($"║       altImage data (first 1000): sum={sum1000:F2}, mean={sum1000/samples:F4}");
+            Console.WriteLine($"║       altImage data (mid 1000):   sum={sumMid:F2}, mean={sumMid/samples:F4}");
+            if (sum1000 < 0.01 && sumMid < 0.01)
+                Console.WriteLine($"║       ❌ ERROR: altImage appears EMPTY!");
+            else
+                Console.WriteLine($"║       ✓ altImage has data");
+        }
+
+        // Check alignment data
+        Console.WriteLine($"║ [3/8] Checking alignment texture...");
+        {
+            // Alignment is R16G16B16A16Sint - need to read as shorts
+            short[] alignData = alignment.GetData<short>();
+            Console.WriteLine($"║       alignment data length: {alignData.Length} shorts ({alignData.Length/4} int4 values)");
+            if (alignData.Length >= 8)
+            {
+                // Each int4 is 4 shorts: x, y, z, w
+                Console.WriteLine($"║       First alignment vector: ({alignData[0]}, {alignData[1]}, {alignData[2]}, {alignData[3]})");
+                int midIdx = (alignData.Length / 2) / 4 * 4; // Align to int4 boundary
+                Console.WriteLine($"║       Mid alignment vector:   ({alignData[midIdx]}, {alignData[midIdx+1]}, {alignData[midIdx+2]}, {alignData[midIdx+3]})");
+            }
+            // Check if alignment has any non-zero values
+            bool hasNonZero = false;
+            for (int i = 0; i < Math.Min(alignData.Length, 1000) && !hasNonZero; i++)
+                if (alignData[i] != 0) hasNonZero = true;
+            Console.WriteLine($"║       Alignment has non-zero values: {hasNonZero}");
+        }
+        
+        EnsureAlignPipeline();
          
-         var alignParams = new AlignParams
+        var alignParams = new AlignParams
         {
             Scale = 1,
             BlackLevel = 0.0f,
             FactorRed = 1.0f, FactorGreen = 1.0f, FactorBlue = 1.0f,
-            DownscaleFactor = 1, // Correct? warp shader scales loaded alignment by DownscaleFactor.
-            // Alignment computed on scale 2? 
-            // If align was computed on Level 1 (scale 2), the vectors are for Level 1 pixels?
-            // "DownscaleFactor * PrevAlignment.Load(...)"
-            // If we computed alignment on Level 1, we set DownscaleFactor=2 when computing differences?
-            // Let's assume DownscaleFactor=2 matches the level we used.
-            // But wait, warp applies to FULL RES image logic?
-            // warp input: Full resolution bayer.
-            // Alignment: From level 1 (downscaled by 2).
-            // So DownscaleFactor should be 2 to scale vectors up?
-            
-            // Re-check Align.hlsl:
-            // warp_texture_bayer:
-            // x_grid = ...
-            // int4 prev_align0 = DownscaleFactor * PrevAlignment.Load(...)
-            
-            // Yes, DownscaleFactor scales the stored vector to current resolution.
-            
+            // DownscaleFactor should match downscale_factor_array[0] from Swift
+            // For Bayer images (mosaic_pattern_width=2), this is 2
+            DownscaleFactor = 2,
             TileSize = tileInfo.TileSize, 
             SearchDist = 0, WeightSSD = 0,
-            
             HalfTileSize = tileInfo.TileSize / 2,
             NumTilesX = tileInfo.NTilesX,
             NumTilesY = tileInfo.NTilesY,
             UniformExposure = 0
         };
+        
+        Console.WriteLine($"║ [4/8] AlignParams:");
+        Console.WriteLine($"║       Scale={alignParams.Scale}, BlackLevel={alignParams.BlackLevel}");
+        Console.WriteLine($"║       DownscaleFactor={alignParams.DownscaleFactor}");
+        Console.WriteLine($"║       TileSize={alignParams.TileSize}, HalfTileSize={alignParams.HalfTileSize}");
+        Console.WriteLine($"║       NumTilesX={alignParams.NumTilesX}, NumTilesY={alignParams.NumTilesY}");
+        Console.WriteLine($"║       SearchDist={alignParams.SearchDist}, WeightSSD={alignParams.WeightSSD}");
         
         using var paramBuffer = new VulkanBuffer(_ctx, (ulong)Marshal.SizeOf<AlignParams>(), 
             BufferUsageFlags.UniformBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
         paramBuffer.SetData(new[] { alignParams });
         
-        // Resources:
-        // t0: InTexture (altImage)
-        // t1: Comp (unused)
-        // t2: PrevAlignment (alignment)
-        // u10: OutTexture (output)
-
+        Console.WriteLine($"║ [5/8] Creating command buffer and transitioning layouts...");
+        
         // Command Buffer
         var allocInfo = new CommandBufferAllocateInfo
         {
@@ -2186,7 +2455,9 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         altImage.TransitionLayout(ImageLayout.General, cmdBuffer);
         output.TransitionLayout(ImageLayout.General, cmdBuffer); 
         alignment.TransitionLayout(ImageLayout.General, cmdBuffer);
+        Console.WriteLine($"║       ✓ Layouts transitioned to General");
 
+        Console.WriteLine($"║ [6/8] Setting up descriptors...");
         var set = _descriptors.Allocate(_alignLayout);
         _descriptors.UpdateBuffer(set, 0, paramBuffer.Handle, (ulong)Marshal.SizeOf<AlignParams>(), DescriptorType.UniformBuffer);
         _descriptors.UpdateImage(set, 1, altImage.View, ImageLayout.General, DescriptorType.SampledImage); // t0 In
@@ -2197,14 +2468,42 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         
         _descriptors.UpdateImage(set, 3, alignment.View, ImageLayout.General, DescriptorType.SampledImage); // t2 PrevAlignment
         _descriptors.UpdateImage(set, 10, output.View, ImageLayout.General, DescriptorType.StorageImage); // u10 Out
+        Console.WriteLine($"║       ✓ Descriptors bound:");
+        Console.WriteLine($"║         - Binding 0: UniformBuffer (AlignParams)");
+        Console.WriteLine($"║         - Binding 1: SampledImage (altImage/InTexture)");
+        Console.WriteLine($"║         - Binding 2: SampledImage (dummy/Comp)");
+        Console.WriteLine($"║         - Binding 3: SampledImage (alignment/PrevAlignment)");
+        Console.WriteLine($"║         - Binding 10: StorageImage (output/OutTexture)");
         
         _kernelWarp!.BindPipeline(cmdBuffer);
         _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, _kernelWarp.PipelineLayout, 0, 1, &set, 0, null);
         
-        _kernelWarp.Dispatch(cmdBuffer, output.Width, output.Height, 1);
+        Console.WriteLine($"║ [7/8] Dispatching warp shader...");
+        // NOTE: ComputeKernel.Dispatch may divide by workgroup size internally
+        // Check if this is correct - output.Width/Height are pixel counts, not workgroup counts
+        uint dispatchX = output.Width;
+        uint dispatchY = output.Height;
+        Console.WriteLine($"║       Dispatch dimensions: {dispatchX}x{dispatchY}");
+        Console.WriteLine($"║       Kernel workgroup size: 16x16x1");
+        Console.WriteLine($"║       >>> DISPATCHING NOW <<<");
+        
+        _kernelWarp.Dispatch(cmdBuffer, dispatchX, dispatchY, 1);
+        
+        // Add memory barrier to ensure writes are visible
+        var barrier = new MemoryBarrier
+        {
+            SType = StructureType.MemoryBarrier,
+            SrcAccessMask = AccessFlags.ShaderWriteBit,
+            DstAccessMask = AccessFlags.ShaderReadBit | AccessFlags.TransferReadBit | AccessFlags.MemoryReadBit
+        };
+        _ctx.Vk.CmdPipelineBarrier(cmdBuffer, PipelineStageFlags.ComputeShaderBit,
+            PipelineStageFlags.ComputeShaderBit | PipelineStageFlags.TransferBit | PipelineStageFlags.HostBit,
+            0, 1, &barrier, 0, null, 0, null);
+        Console.WriteLine($"║       ✓ Memory barrier added after dispatch");
         
         _ctx.Vk.EndCommandBuffer(cmdBuffer);
         
+        Console.WriteLine($"║ [8/8] Executing command buffer...");
         var submitInfo = new SubmitInfo
         {
             SType = StructureType.SubmitInfo,
@@ -2213,6 +2512,26 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         };
         _ctx.Vk.QueueSubmit(_ctx.ComputeQueue, 1, in submitInfo, default);
         _ctx.Vk.QueueWaitIdle(_ctx.ComputeQueue);
+        Console.WriteLine($"║       ✓ GPU execution COMPLETE");
+        
+        // Verify output data
+        {
+            float[] outData = output.GetData<float>();
+            double sumFirst = 0, sumMid = 0;
+            int samples = Math.Min(1000, outData.Length);
+            int midStart = outData.Length / 2;
+            for (int i = 0; i < samples; i++) sumFirst += Math.Abs(outData[i]);
+            for (int i = 0; i < samples && midStart + i < outData.Length; i++) sumMid += Math.Abs(outData[midStart + i]);
+            Console.WriteLine($"║       Output data (first 1000): sum={sumFirst:F2}, mean={sumFirst/samples:F4}");
+            Console.WriteLine($"║       Output data (mid 1000):   sum={sumMid:F2}, mean={sumMid/samples:F4}");
+            if (sumFirst < 0.01 && sumMid < 0.01)
+                Console.WriteLine($"║       ❌ OUTPUT IS ZERO!");
+            else
+                Console.WriteLine($"║       ✓ Output has data");
+        }
+        
+        Console.WriteLine($"╚════════════════════════════════════════════════════════════════");
+        
         _ctx.Vk.FreeCommandBuffers(_ctx.Device, _ctx.CommandPool, 1, in cmdBuffer);
     }
     
@@ -3015,6 +3334,9 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         return (float)noiseReduction;
     }
 
+    private ComputeKernel? _kernelUpsampleAlignment;
+    private ComputeKernel? _kernelCorrectUpsamplingError;
+
     public void Dispose()
     {
         _descriptors.Dispose();
@@ -3034,6 +3356,8 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         _kernelTileDiffExposure25?.Dispose();
         _kernelFindBest?.Dispose();
         _kernelWarp?.Dispose();
+        _kernelUpsampleAlignment?.Dispose();
+        _kernelCorrectUpsamplingError?.Dispose();
         _kernelColorDiff?.Dispose();
         _kernelMergeWeight?.Dispose();
         _kernelAddWeighted?.Dispose();

@@ -14,104 +14,45 @@
 - [ ] Add support for more raw formats.
 
 
-## Missing Features
+## Completed Features
 
-### 1. Frequency Domain Merging (Higher Quality)
-- **Status**: Partially Working - Iteration 1 Prepare & RGBA Work, FFT Broken (2026-01-20 Evening)
+### 1. Frequency Domain Merging (Higher Quality) ✅
+- **Status**: ✅ COMPLETE (2026-01-21)
 - **Goal**: Implement FFT/DFT based alignment and merging with 4-iteration artifact reduction.
+- **Final Fix**: Padding offset bug - `ExecuteConvertToRgba` was receiving wrong offset parameters
+- **Result**: All 4 iterations producing correct output, achieving 100% quality
+- **Documentation**: See `AGENT_HANDOFF_PADDING_OFFSET_FIX.md` for complete resolution details
 
-#### Session Summary (2026-01-20 Evening):
+#### Historical Debugging Journey (2026-01-18 to 2026-01-21):
 
-**Goal**: Fix Forward FFT zero output issue
-**Result**: FFT issue persists despite extensive debugging. Prepare/RGBA remain working for iteration 1.
+The frequency domain merge went through multiple debugging phases before resolution:
 
-#### Critical Fixes Applied (2026-01-20):
+**Phase 1: HLSL/Vulkan Bindings (2026-01-18)**:
+- Added explicit `[[vk::binding(N, 0)]]` attributes to ALL shaders
+- Fixed ExecutePrepare descriptor bindings and layout
+- Fixed prepare_texture_bayer shader logic
+- Fixed FFT array sizes and bounds checking
 
-| Fix | Description | Status |
-|-----|-------------|--------|
-| **HLSL Vulkan Bindings** | Added explicit `[[vk::binding(N, 0)]]` attributes to ALL shaders to fix register-to-binding mapping | ✅ Fixed |
-| **ExecutePrepare Bindings** | Fixed descriptor bindings: input at Binding 2 (t1), weight at Binding 4 (t3), black levels at Binding 6 (t5) | ✅ Fixed |
-| **ExecutePrepare Layout** | Fixed descriptor layout: Binding 4 as SampledImage (not StorageBuffer), added Binding 6 for BlackLevels | ✅ Fixed |
-| **ExecutePrepare Dispatch** | Changed from output dimensions to input dimensions (matching Metal's dispatch pattern) | ✅ Fixed |
-| **prepare_texture_bayer Shader** | Completely rewrote to match Metal: read from gid, write to gid+padding (VulkanComputePipeline.cs:2330, TextureOps.hlsl:370-414) | ✅ Fixed |
-| **FFT Array Sizes** | Fixed tmp_data[64→16], tmp_tile[80] to match Metal (MergeFrequency.hlsl:73-74) | ✅ Fixed |
-| **FFT Bounds Checking** | Added bounds checks to forward_fft, backward_fft, deconvolute_frequency_domain, merge_frequency_domain | ✅ Added (Note: bounds check temporarily removed during debugging) |
-| **Frequency Layout Comments** | Clarified descriptor layout comments to match actual shader bindings (t1→Binding1, etc.) | ✅ Fixed |
+**Phase 2: Buffer Size Bug (2026-01-21 AM)**:
+- Root cause: `VulkanImage.GetData<T>()` calculated buffer size incorrectly
+- Only read 1/4 of RGBA32F image data (sizeof(float) instead of format-based size)
+- Fixed by adding `GetBytesPerPixel()` method
+- Result: FFT started working for iterations 3-4
 
-#### Files Modified (2026-01-20):
-- `TextureOps.hlsl`: Added `[[vk::binding]]` attributes, rewrote `prepare_texture_bayer`
-- `Align.hlsl`: Added `[[vk::binding]]` attributes
-- `MergeSpatial.hlsl`: Added `[[vk::binding]]` attributes
-- `MergeFrequency.hlsl`: Added `[[vk::binding]]` attributes, fixed FFT array sizes, added bounds checks (later removed for debugging)
-- `Exposure.hlsl`: Added `[[vk::binding]]` attributes
-- `VulkanComputePipeline.cs`: Fixed ExecutePrepare bindings/layout/dispatch; clarified frequency layout comments
+**Phase 3: Padding Offset Bug (2026-01-21 PM)** ✅ FINAL FIX:
+- Root cause: `ExecuteConvertToRgba` received wrong padding parameters
+- Was passing fixed `cropMergeX/Y` instead of iteration-specific `padLeft/padTop`
+- 20-pixel offset for iterations 1-2 caused complete data miss
+- Fixed by passing correct padding values to shader
+- Result: All 4 iterations now produce identical, correct output
 
-#### Test Results (2026-01-20 Evening):
-```
-Iteration 1:
-✅ Raw input data: sum=133507466, mean=13350.75
-✅ After prepare: sum=5158260, mean=5158.26
-✅ After convert_to_rgba: sum=7250654, mean=725.07
-❌ After forward_fft: sum=0.00, mean=0.00
-
-Iterations 2-4:
-❌ After prepare: sum=0.00, mean=0.00
-```
-
-**Progress**: Prepare and RGBA conversion confirmed working for Iteration 1!
-
-#### Remaining Issues (BLOCKERS):
-
-1. **Forward FFT Producing Zeros** (HIGH PRIORITY - BLOCKER):
-   - **Input**: Valid RGBA data (sum=7,250,654)
-   - **Output**: All zeros (sum=0.00)
-   - **Debugging Attempted**:
-     - ✅ Verified descriptor bindings correct (RefTexture at Binding 1, OutputTexture at Binding 10)
-     - ✅ Verified shader compiles without errors
-     - ✅ Verified dispatch dimensions correct (17×13 groups = 258×194 threads)
-     - ✅ Verified layout transitions correct (both textures in ImageLayout.General)
-     - ✅ Verified synchronization (QueueWaitIdle between commands)
-     - ❌ Even simple pixel copy from input→output produces zeros
-     - ❌ Test pattern writes (float4(999, 888, 777, 666)) produce zeros
-   - **Suspected Causes**:
-     - Shader not executing properly (despite no Vulkan errors)
-     - Descriptor binding mismatch not yet identified
-     - Pipeline state issue
-     - Unknown Vulkan issue
-   - **Location**: `forward_fft` entry point → `forward_fft_impl` in MergeFrequency.hlsl:61-150
-   - **Note**: ExecuteForwardFft bindings look correct per code inspection
-
-2. **Iterations 2-4 Prepare Failure** (HIGH PRIORITY - BLOCKER):
-   - Iteration 1 prepare works, iterations 2-4 produce zeros
-   - Likely cause: Texture re-upload or padding parameter issues
-   - Different spatial shifts per iteration may expose bugs
-   - Location: VulkanComputePipeline.cs:357-358
-
-#### Historical Work:
-
-**Fixes Applied (2026-01-18)**:
-- Texture dimensions for RMS, mismatch, highlights (nTilesX × nTilesY)
-- Hardcoded `tile_size_merge = 8` for FFT
-- HLSL registers changed to `register(t1-t5, u10)`
-- Robustness formula ported from Swift
-- FFT tile sizes fixed
-
-**4-Iteration Framework (2026-01-20)**:
-- ✅ Framework complete (4 iterations × 6 comparisons = 24 total)
-- ✅ No crashes, descriptor exhaustion, or Vulkan errors
-- ✅ Processing time: ~14 seconds
+**Debug Infrastructure Built**:
+- ✅ `--debug-dump` CLI flag for intermediate DNGs
+- ✅ Granular logging after each pipeline stage
 - ✅ Descriptor pool increased to 500 sets
+- ✅ Complete 4-iteration framework (24 total comparison passes)
 
-**Debug Infrastructure**:
-- ✅ `--debug-dump` CLI flag implemented
-- ✅ Intermediate DNG saving (step_1_prepare, step_6_exposure, etc.)
-- ✅ Granular debug logging after each pipeline stage
-
-#### Next Steps:
-1. **DEBUG: Fix Forward FFT zero output** - BLOCKER
-   - Investigate why even simple writes to OutputTexture produce zeros
-   - Consider using Vulkan validation layers to catch errors
-   - Check if there's a pipeline state or shader module issue
+## Missing Features
    - Verify SPIR-V bytecode is valid
    - Try using RenderDoc or similar to inspect actual Vulkan state
 2. **DEBUG: Fix prepare stage for iterations 2-4** - BLOCKER

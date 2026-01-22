@@ -606,6 +606,24 @@ void correct_upsampling_error(uint3 DTid : SV_DispatchThreadID)
 }
 
 // -------------------------------------------------------------------------
+// upsample_alignment
+// -------------------------------------------------------------------------
+[numthreads(16, 16, 1)]
+void upsample_alignment(uint3 DTid : SV_DispatchThreadID)
+{
+    // Upsample integer alignment vectors by factor of 2 (nearest neighbor)
+    // Input: PrevAlignment (smaller), Output: OutAlignment (larger)
+    // Coords in DTid are for the Output texture
+    
+    // Read from smaller texture at half coordinates
+    // Using simple nearest neighbor (floor of coord / 2)
+    int4 val = PrevAlignment.Load(int3(DTid.xy / 2, 0));
+    
+    // Write to output
+    OutAlignment[DTid.xy] = val;
+}
+
+// -------------------------------------------------------------------------
 // warp_texture_bayer
 // -------------------------------------------------------------------------
 [numthreads(16, 16, 1)]
