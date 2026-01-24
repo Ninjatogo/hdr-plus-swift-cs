@@ -159,8 +159,8 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                 IsBayerData = refMeta.IsBayerData
             };
             
-            // Write using DngSdkWriter
-            using var writer = new DngSdkWriter();
+            // Write using LibTiffDngWriter to avoid native dependency for debug dumps
+            var writer = new BurstPhoto.Core.Implementations.LibTiffDngWriter();
             writer.Write(outputPath, debugImage);
             
             Console.WriteLine($"[DebugDump] Saved {stepName} successfully.");
@@ -377,13 +377,24 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                     double centerSum = 0;
                     for (int i = 0; i < Math.Min(1000, prepData.Length - rowStart); i++) centerSum += Math.Abs(prepData[rowStart + i]);
                     Console.WriteLine($"[DEBUG] Iteration {iteration}: After prepare (center region): sum={centerSum:F2}, mean={centerSum/1000.0:F4}");
+                    
+                    // CHECK LEFT EDGE at mid height - this is exactly where RGBA mid samples from!
+                    // RGBA pixel (0, 768) reads from Bayer (padLeft, padTop + 768*2) = (260, 1788)
+                    int leftEdgeRow = padTop + (height / 2); // 252 + 1536 = 1788
+                    int leftEdgeStart = leftEdgeRow * iterOutWidth + padLeft;
+                    double leftEdgeSum = 0;
+                    for (int i = 0; i < Math.Min(100, prepData.Length - leftEdgeStart); i++) leftEdgeSum += Math.Abs(prepData[leftEdgeStart + i]);
+                    Console.WriteLine($"[DEBUG] Iteration {iteration}: After prepare (LEFT EDGE row {leftEdgeRow}): sum={leftEdgeSum:F2}, mean={leftEdgeSum/100.0:F4}");
+                    
                     if (prepSum < 0.01) Console.WriteLine($"[WARNING] Prepare produced near-zero output!");
                 }
 
-                // RGBA dimensions: Swift uses (BayerWidth - 2*cropMergeX) / 2
-                // This crops out the padding border before superpixel packing
-                int rgbaWidth = (iterOutWidth - 2 * cropMergeX) / 2;
-                int rgbaHeight = (iterOutHeight - 2 * cropMergeY) / 2;
+                // RGBA dimensions: Output should match the actual data region (excluding padding)
+                // The preparedRef texture has data in region [padLeft:padLeft+width, padTop:padTop+height]
+                // RGBA packs 2x2 Bayer pixels into 1 RGBA pixel, so dimensions are halved
+                int rgbaWidth = width / 2;
+                int rgbaHeight = height / 2;
+                Console.WriteLine($"[DEBUG] Iteration {iteration}: RGBA dimensions: {rgbaWidth}x{rgbaHeight} (from data region {width}x{height})");
                 int ftWidth = rgbaWidth * 2; // Complex storage (Real + Imaginary)
                 int ftHeight = rgbaHeight;
 
@@ -428,6 +439,13 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                     refPyramid.Add(levelImg);
                     currW = nW; currH = nH;
                 }
+
+                // Calculate TileInfo for THIS ITERATION based on padded pyramid level 0 dimensions
+                // CRITICAL FIX: Swift calculates n_tiles from ref_layer (pyramid level) dimensions, NOT original image
+                // Swift: n_tiles_x = ref_layer.width / (tile_size / 2) - 1
+                // Our pyramid level 0 is l0RefW x l0RefH (half of padded iteration size)
+                var iterTileInfo = TileInfo.Calculate(l0RefW, l0RefH, tileSize, ProcessingOptions.GetSearchDistancePixels(options.SearchDistance));
+                Console.WriteLine($"[VulkanComputePipeline] Iteration {iteration} TileInfo: {iterTileInfo.NTilesX}x{iterTileInfo.NTilesY} tiles (from {l0RefW}x{l0RefH} pyramid L0)");
 
                 // Calculate RMS per iteration (tile grid size)
                 int nTilesX = (iterOutWidth - 2 * cropMergeX) / (2 * tile_size_merge);
@@ -511,10 +529,10 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                         currW = nW; currH = nH;
                     }
 
-                    // Align and warp
-                    using var alignment = new VulkanImage(_ctx, (uint)tileInfo.NTilesX, (uint)tileInfo.NTilesY, Format.R16G16B16A16Sint,
+                    // Align and warp - use iterTileInfo (calculated from padded pyramid dimensions)
+                    using var alignment = new VulkanImage(_ctx, (uint)iterTileInfo.NTilesX, (uint)iterTileInfo.NTilesY, Format.R16G16B16A16Sint,
                         ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit);
-                    ExecuteAlignmentSearch(refPyramid, altPyramid, alignment, tileInfo, 2);
+                    ExecuteAlignmentSearch(refPyramid, altPyramid, alignment, iterTileInfo, 2);
 
                     using var warpedAlt = new VulkanImage(_ctx, (uint)iterOutWidth, (uint)iterOutHeight, Format.R32Sfloat,
                         ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
@@ -537,7 +555,7 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                         }
                     }
                     
-                    ExecuteWarp(preparedAlt, warpedAlt, alignment, tileInfo);
+                    ExecuteWarp(preparedAlt, warpedAlt, alignment, iterTileInfo, padLeft, padTop);
 
                     // DEBUG: Check warpedAlt before RGBA conversion
                     {
@@ -573,9 +591,13 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                     {
                         float[] rgbaData = alignedTextureRgba.GetData<float>();
                         double rgbaSum = 0;
+                        double rgbaSumMid = 0;
                         int rgbaSamples = Math.Min(rgbaData.Length, 1000);
+                        int midStart = rgbaData.Length / 2;
                         for (int i = 0; i < rgbaSamples; i++) rgbaSum += Math.Abs(rgbaData[i]);
-                        Console.WriteLine($"[WARP DEBUG] alignedTextureRgba AFTER convert: sum={rgbaSum:F2}, mean={rgbaSum/rgbaSamples:F4}");
+                        for (int i = 0; i < rgbaSamples && midStart + i < rgbaData.Length; i++) rgbaSumMid += Math.Abs(rgbaData[midStart + i]);
+                        Console.WriteLine($"[WARP DEBUG] alignedTextureRgba AFTER convert: first1000 sum={rgbaSum:F2}, mid1000 sum={rgbaSumMid:F2}");
+                        Console.WriteLine($"[WARP DEBUG]   Total size={rgbaData.Length} floats ({rgbaWidth}x{rgbaHeight}x4)");
                     }
 
                     // Calculate exposure factor
@@ -639,9 +661,43 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                     ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
                 ExecuteBackwardFft(finalTextureFT, outputTextureRgba, input.Images.Count, tile_size_merge);
 
-                // DEBUG: Check backward FFT output
+                // DEBUG: Check backward FFT output and decode shader debug info
                 {
                     float[] backFftData = outputTextureRgba.GetData<float>();
+
+                    // Decode debug info from corner pixels (16×16 region)
+                    Console.WriteLine("[DEBUG] === Shader Debug Info (backward_fft) ===");
+                    Console.WriteLine("[DEBUG] First 16×16 pixels encode: R=threadX, G=threadY, B=nTilesX, A=nTilesY (as raw floats)");
+
+                    // Read corner pixel (0,0) which should have nTilesX/nTilesY info
+                    int stride = rgbaWidth * 4; // RGBA = 4 channels
+                    float threadX_0_0 = backFftData[0];
+                    float threadY_0_0 = backFftData[1];
+                    float shader_nTilesX = backFftData[2];
+                    float shader_nTilesY = backFftData[3];
+                    Console.WriteLine($"[DEBUG] Pixel(0,0): threadID=({threadX_0_0:F0},{threadY_0_0:F0}), shader_nTilesX={shader_nTilesX:F0}, shader_nTilesY={shader_nTilesY:F0}");
+                    Console.WriteLine($"[DEBUG] Dispatched: {rgbaWidth/tile_size_merge}x{rgbaHeight/tile_size_merge} threads (for {rgbaWidth}x{rgbaHeight} texture, tileSize={tile_size_merge})");
+
+                    // Check if any threads beyond (128,96) executed
+                    bool foundBeyond128 = false;
+                    int maxThreadX = 0, maxThreadY = 0;
+                    for (int y = 0; y < 16 && y < rgbaHeight; y++) {
+                        for (int x = 0; x < 16 && x < rgbaWidth; x++) {
+                            int idx = (y * rgbaWidth + x) * 4;
+                            float threadX = backFftData[idx + 0];
+                            float threadY = backFftData[idx + 1];
+                            maxThreadX = Math.Max(maxThreadX, (int)threadX);
+                            maxThreadY = Math.Max(maxThreadY, (int)threadY);
+                            if (threadX >= 128 || threadY >= 96) {
+                                foundBeyond128 = true;
+                            }
+                        }
+                    }
+                    Console.WriteLine($"[DEBUG] Max thread IDs in debug region: ({maxThreadX}, {maxThreadY})");
+                    if (!foundBeyond128) {
+                        Console.WriteLine("[DEBUG] WARNING: No threads with X>=128 or Y>=96 found in debug region!");
+                    }
+
                     double backFftSum = 0;
                     int sampleSize = Math.Min(backFftData.Length, 10000);
                     for (int i = 0; i < sampleSize; i++) backFftSum += Math.Abs(backFftData[i]);
@@ -665,8 +721,13 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                 }
 
                 // Convert RGBA → Bayer
-                Console.WriteLine($"[VulkanComputePipeline] Iteration {iteration}: Converting to Bayer...");
-                using var outputTextureBayer = new VulkanImage(_ctx, (uint)iterOutWidth, (uint)iterOutHeight, Format.R32Sfloat,
+                // CRITICAL FIX: Use unpadded Bayer dimensions (2x RGBA) - not padded iteration dimensions
+                // The RGBA texture is unpadded (rgbaWidth x rgbaHeight), so Bayer output must be (rgbaWidth*2 x rgbaHeight*2)
+                // Using padded dims caused OOB reads in shader (reads RGBA at gid/2, returning zeros for gid > 2*RGBA dims)
+                int bayerWidth = rgbaWidth * 2;   // = width (original image width)
+                int bayerHeight = rgbaHeight * 2; // = height (original image height)
+                Console.WriteLine($"[VulkanComputePipeline] Iteration {iteration}: Converting to Bayer ({bayerWidth}x{bayerHeight})...");
+                using var outputTextureBayer = new VulkanImage(_ctx, (uint)bayerWidth, (uint)bayerHeight, Format.R32Sfloat,
                     ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
                 ExecuteConvertToBayer(outputTextureRgba, outputTextureBayer, refImage.CfaPattern);
 
@@ -676,11 +737,16 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                     double bayerSum = 0;
                     int sampleSize = Math.Min(bayerData.Length, 10000);
                     for (int i = 0; i < sampleSize; i++) bayerSum += Math.Abs(bayerData[i]);
-                    Console.WriteLine($"[DEBUG] Iteration {iteration}: After convert_to_bayer: sum(first {sampleSize})={bayerSum:F2}, mean={bayerSum/sampleSize:F4}");
-                    if (bayerSum < 0.01) Console.WriteLine($"[WARNING] Convert to Bayer produced near-zero output!");
+                    // Also check middle of image
+                    double bayerMidSum = 0;
+                    int midStart = bayerData.Length / 2;
+                    for (int i = 0; i < sampleSize && midStart + i < bayerData.Length; i++) bayerMidSum += Math.Abs(bayerData[midStart + i]);
+                    Console.WriteLine($"[DEBUG] Iteration {iteration}: After convert_to_bayer: first10k={bayerSum:F2}, mid10k={bayerMidSum:F2}");
+                    if (bayerSum < 0.01 && bayerMidSum < 0.01) Console.WriteLine($"[WARNING] Convert to Bayer produced near-zero output!");
                 }
 
-                // Crop and add to final accumulator
+                // Add to final accumulator
+                // outputTextureBayer is now unpadded (width x height), copy directly to accumulator
                 float[] iterOutput = outputTextureBayer.GetData<float>();
 
                 // DEBUG: Check iteration output
@@ -688,14 +754,14 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                 for (int i = 0; i < Math.Min(iterOutput.Length, 100000); i++) iterSum += iterOutput[i];
                 Console.WriteLine($"[VulkanComputePipeline] Iteration {iteration} output: sum={iterSum:F2}, mean={iterSum/Math.Min(iterOutput.Length, 100000):F2}");
 
-                // Crop from iteration output (which has iteration-specific padding) to final accumulator coordinates
+                // Copy from unpadded iteration output to padded accumulator
                 float[] accData = finalAccumulator.GetData<float>();
                 int pixelsUpdated = 0;
                 for (int y = 0; y < height; y++)
                 {
                     for (int x = 0; x < width; x++)
                     {
-                        int srcIdx = (y + padTop) * iterOutWidth + (x + padLeft);
+                        int srcIdx = y * bayerWidth + x;  // No padding offset - output is unpadded
                         int dstIdx = (y + padAlignY) * accWidth + (x + padAlignX);
                         accData[dstIdx] += iterOutput[srcIdx] / 4.0f; // Normalize by 4 iterations
                         pixelsUpdated++;
@@ -703,6 +769,29 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                 }
                 finalAccumulator.SetData(accData);
                 Console.WriteLine($"[VulkanComputePipeline] Updated {pixelsUpdated} pixels in accumulator");
+                
+                // DEBUG: Verify accumulator has data after SetData
+                {
+                    float[] verifyData = finalAccumulator.GetData<float>();
+                    
+                    // Sample from DATA REGION (after padding offset), not from start (which is padding)
+                    int dataStartIdx = padAlignY * accWidth + padAlignX;
+                    double verifySum = 0;
+                    int samples = Math.Min(10000, verifyData.Length - dataStartIdx);
+                    for (int i = 0; i < samples; i++) verifySum += Math.Abs(verifyData[dataStartIdx + i]);
+                    Console.WriteLine($"[DEBUG] After SetData: accumulator data region sum={verifySum:F2} (at offset {dataStartIdx})");
+                    
+                    // Also verify first few actual values
+                    if (samples > 0)
+                    {
+                        Console.WriteLine($"[DEBUG] First 5 values at data region: {verifyData[dataStartIdx]:F4}, {verifyData[dataStartIdx+1]:F4}, {verifyData[dataStartIdx+2]:F4}, {verifyData[dataStartIdx+3]:F4}, {verifyData[dataStartIdx+4]:F4}");
+                    }
+                    
+                    // Check CPU array at same location
+                    double cpuSum = 0;
+                    for (int i = 0; i < samples; i++) cpuSum += Math.Abs(accData[dataStartIdx + i]);
+                    Console.WriteLine($"[DEBUG] CPU accData data region sum={cpuSum:F2}");
+                }
 
                 // Cleanup ref pyramid
                 foreach (var lvl in refPyramid) if (lvl != preparedRef) lvl.Dispose();
@@ -809,7 +898,7 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                  Console.WriteLine($"[VulkanComputePipeline] Warping Image {i}...");
                  var warpedAlt = new VulkanImage(_ctx, preparedAlt.Width, preparedAlt.Height, Format.R32Sfloat,
                     ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
-                 ExecuteWarp(preparedAlt, warpedAlt, alignment, tileInfo);
+                 ExecuteWarp(preparedAlt, warpedAlt, alignment, tileInfo, pad, pad);
 
                  // 6. Merge (Spatial only)
                  Console.WriteLine($"[VulkanComputePipeline] Merging Image {i}...");
@@ -1438,15 +1527,13 @@ public unsafe class VulkanComputePipeline : IComputePipeline
             
             kernel.BindPipeline(cmd2);
             _ctx.Vk.CmdBindDescriptorSets(cmd2, PipelineBindPoint.Compute, kernel.PipelineLayout, 0, 1, &set, 0, null);
-            
-            // Per-pixel dispatch: ceil(pixels / 16)
-            uint groupsX = (uint)Math.Ceiling((double)width / 16.0);
-            uint groupsY = (uint)Math.Ceiling((double)height / 16.0);
-            kernel.Dispatch(cmd2, groupsX, groupsY, 1);
-            
+
+            // FIX: Dispatch expects pixel dimensions, not pre-calculated groups!
+            kernel.Dispatch(cmd2, (uint)width, (uint)height, 1);
+
             _ctx.EndSingleTimeCommands(cmd2);
         }
-        
+
         // Helper to dispatch FFT kernels (per-tile dispatch)
         void DispatchTile(ComputeKernel kernel, VulkanImage u0, VulkanImage t0, VulkanImage t1 = null, VulkanImage t2 = null, VulkanImage t3 = null, VulkanImage t4 = null)
         {
@@ -1462,15 +1549,15 @@ public unsafe class VulkanComputePipeline : IComputePipeline
             
             kernel.BindPipeline(cmd2);
             _ctx.Vk.CmdBindDescriptorSets(cmd2, PipelineBindPoint.Compute, kernel.PipelineLayout, 0, 1, &set, 0, null);
-            
-            // Per-tile dispatch: num_tiles = width/tileSize, groups = ceil(num_tiles/16)
-            uint groupsX = (uint)Math.Ceiling((double)width / tile_size_merge / 16.0);
-            uint groupsY = (uint)Math.Ceiling((double)height / tile_size_merge / 16.0);
-            kernel.Dispatch(cmd2, groupsX, groupsY, 1);
-            
+
+            // FIX: Dispatch expects tile counts (width/tileSize, height/tileSize), not pre-calculated groups!
+            uint nTilesX_local = (uint)(width / tile_size_merge);
+            uint nTilesY_local = (uint)(height / tile_size_merge);
+            kernel.Dispatch(cmd2, nTilesX_local, nTilesY_local, 1);
+
             _ctx.EndSingleTimeCommands(cmd2);
         }
-        
+
         // Helper to dispatch tile-grid kernels (for RMS, Mismatch, Highlights)
         void DispatchTileGrid(ComputeKernel kernel, VulkanImage u0, VulkanImage t0, VulkanImage t1 = null, VulkanImage t2 = null)
         {
@@ -1484,12 +1571,10 @@ public unsafe class VulkanComputePipeline : IComputePipeline
             
             kernel.BindPipeline(cmd2);
             _ctx.Vk.CmdBindDescriptorSets(cmd2, PipelineBindPoint.Compute, kernel.PipelineLayout, 0, 1, &set, 0, null);
-            
-            // Dispatch for tile grid (nTilesX * nTilesY threads)
-            uint groupsX = (uint)Math.Ceiling((double)nTilesX / 16.0);
-            uint groupsY = (uint)Math.Ceiling((double)nTilesY / 16.0);
-            kernel.Dispatch(cmd2, groupsX, groupsY, 1);
-            
+
+            // FIX: Dispatch expects tile counts (nTilesX, nTilesY), not pre-calculated groups!
+            kernel.Dispatch(cmd2, (uint)nTilesX, (uint)nTilesY, 1);
+
             _ctx.EndSingleTimeCommands(cmd2);
         }
 
@@ -1593,6 +1678,7 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         
         Console.WriteLine($"[ExecuteBackwardFft] InputFT: {inputFT.Width}x{inputFT.Height}, Output: {width}x{height}");
         Console.WriteLine($"[ExecuteBackwardFft] TileSize={tileSize}, NumTextures={numTextures}, Tiles={nTilesX}x{nTilesY}");
+        Console.WriteLine($"[ExecuteBackwardFft] WorkGroupSize: 16x16, Expected workgroups: {Math.Ceiling(nTilesX/16.0)}x{Math.Ceiling(nTilesY/16.0)}");
         
         var freqParams = new FrequencyParams
         {
@@ -1619,12 +1705,11 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         _kernelBackwardFft!.BindPipeline(cmd);
         _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _kernelBackwardFft.PipelineLayout, 0, 1, &set, 0, null);
         
-        // Dispatch groups
-        uint groupsX = (uint)Math.Ceiling((double)nTilesX / 16.0);
-        uint groupsY = (uint)Math.Ceiling((double)nTilesY / 16.0);
-        
-        Console.WriteLine($"[ExecuteBackwardFft] Dispatching {groupsX}x{groupsY} groups ({nTilesX}x{nTilesY} threads)");
-        _kernelBackwardFft.Dispatch(cmd, groupsX, groupsY, 1);
+        // FIX: Dispatch expects THREAD COUNTS (nTilesX, nTilesY), not pre-calculated groups!
+        // The Dispatch() function internally divides by WorkGroupSize (16×16) to calculate groups.
+        // Was passing groupsX=16, groupsY=12 which got divided again → only 1×1 workgroups dispatched!
+        Console.WriteLine($"[ExecuteBackwardFft] Dispatching {nTilesX}x{nTilesY} threads");
+        _kernelBackwardFft.Dispatch(cmd, (uint)nTilesX, (uint)nTilesY, 1);
         _ctx.EndSingleTimeCommands(cmd);
     }
     
@@ -1692,20 +1777,18 @@ public unsafe class VulkanComputePipeline : IComputePipeline
            _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _kernelForwardFft.PipelineLayout, 0, 1, &set, 0, null);
            Console.WriteLine($"║       ✓ Pipeline and descriptor sets bound");
 
-           // Dispatch 1 thread per tile. Group size (16,16).
+           // FIX: Dispatch expects THREAD COUNTS (nTilesX, nTilesY), not pre-calculated groups!
+           // The Dispatch() function internally divides by WorkGroupSize (16×16) to calculate groups.
            uint groupsX = (uint)Math.Ceiling((double)nTilesX / 16.0);
            uint groupsY = (uint)Math.Ceiling((double)nTilesY / 16.0);
-           uint totalGroups = groupsX * groupsY;
-           uint totalThreads = groupsX * groupsY * 16 * 16;
 
            Console.WriteLine($"║ [8/9] Dispatching compute shader:");
-           Console.WriteLine($"║       Workgroups: {groupsX}x{groupsY} = {totalGroups} groups");
-           Console.WriteLine($"║       Threads: {groupsX * 16}x{groupsY * 16} = {totalThreads} threads");
-           Console.WriteLine($"║       Active threads (within bounds): {nTilesX}x{nTilesY} = {nTilesX * nTilesY}");
+           Console.WriteLine($"║       Thread count: {nTilesX}x{nTilesY} (one thread per tile)");
+           Console.WriteLine($"║       Expected workgroups (after Dispatch divides): {groupsX}x{groupsY}");
            Console.WriteLine($"║       Workgroup size: 16x16x1 = 256 threads/group");
 
            Console.WriteLine($"║       >>> DISPATCHING NOW <<<");
-           _kernelForwardFft.Dispatch(cmd, groupsX, groupsY, 1);
+           _kernelForwardFft.Dispatch(cmd, (uint)nTilesX, (uint)nTilesY, 1);
            Console.WriteLine($"║       ✓ Dispatch command recorded");
 
            // CRITICAL: Add memory barrier to ensure shader writes are visible before readback
@@ -1868,13 +1951,45 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         _kernelConvertToRgba!.BindPipeline(cmd);
         _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _kernelConvertToRgba.PipelineLayout, 0, 1, &set, 0, null);
 
-        // Dispatch: one thread per OUTPUT pixel (RGBA dimensions)
-        uint groupsX = (uint)Math.Ceiling((double)rgbaOutput.Width / 16.0);
-        uint groupsY = (uint)Math.Ceiling((double)rgbaOutput.Height / 16.0);
-        Console.WriteLine($"[DEBUG] ExecuteConvertToRgba: Input={bayerInput.Width}x{bayerInput.Height}, Output={rgbaOutput.Width}x{rgbaOutput.Height}, CropX={cropX}, CropY={cropY}, Dispatch={groupsX}x{groupsY}");
-        _kernelConvertToRgba.Dispatch(cmd, groupsX, groupsY, 1);
+        // FIX: Dispatch expects OUTPUT DIMENSIONS (pixels), not pre-calculated groups!
+        // The Dispatch() function internally divides by WorkGroupSize to calculate groups.
+        // Passing pre-calculated groups caused only 128/16 x 96/16 = 8x6 groups = 128x96 pixels
+        Console.WriteLine($"[DEBUG] ExecuteConvertToRgba: Input={bayerInput.Width}x{bayerInput.Height}, Output={rgbaOutput.Width}x{rgbaOutput.Height}, CropX={cropX}, CropY={cropY}");
+        _kernelConvertToRgba.Dispatch(cmd, rgbaOutput.Width, rgbaOutput.Height, 1);
 
         _ctx.EndSingleTimeCommands(cmd);
+
+        // POST-SHADER VALIDATION
+        {
+            float[] outData = rgbaOutput.GetData<float>();
+            double sumFirst = 0, sumMid = 0;
+            int samples = Math.Min(1000, outData.Length);
+            int midStart = outData.Length / 2;
+            for (int i = 0; i < samples; i++) sumFirst += Math.Abs(outData[i]);
+            for (int i = 0; i < samples && midStart + i < outData.Length; i++) sumMid += Math.Abs(outData[midStart + i]);
+            Console.WriteLine($"[CONVERT_RGBA] POST-SHADER: first1000={sumFirst:F2}, mid1000={sumMid:F2}, total={outData.Length}");
+            
+            // Sample specific rows to find where data stops
+            int texWidth = (int)rgbaOutput.Width;
+            int texHeight = (int)rgbaOutput.Height;
+            for (int row = 0; row < texHeight; row += texHeight / 8)  // Sample every 1/8th of the image
+            {
+                int rowStartFloat = row * texWidth * 4;  // 4 floats per RGBA pixel
+                double rowSum = 0;
+                int rowSamples = Math.Min(texWidth * 4, outData.Length - rowStartFloat);
+                if (rowStartFloat >= 0 && rowStartFloat < outData.Length && rowSamples > 0)
+                {
+                    for (int i = 0; i < Math.Min(400, rowSamples); i++) 
+                        rowSum += Math.Abs(outData[rowStartFloat + i]);
+                    Console.WriteLine($"[CONVERT_RGBA] Row {row}: sum={rowSum:F2} (first 100 pixels)");
+                }
+            }
+            
+            if (sumFirst < 0.01 && sumMid < 0.01)
+            {
+                Console.WriteLine($"[CONVERT_RGBA] ❌ SHADER PRODUCED ALL ZEROS!");
+            }
+        }
     }
     
     /// <summary>
@@ -1920,10 +2035,10 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         _kernelConvertToBayer!.BindPipeline(cmd);
         _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _kernelConvertToBayer.PipelineLayout, 0, 1, &set, 0, null);
         
-        // Dispatch: one thread per OUTPUT pixel (Bayer dimensions)
-        uint groupsX = (uint)Math.Ceiling((double)bayerOutput.Width / 16.0);
-        uint groupsY = (uint)Math.Ceiling((double)bayerOutput.Height / 16.0);
-        _kernelConvertToBayer.Dispatch(cmd, groupsX, groupsY, 1);
+        
+        // FIX: Dispatch expects OUTPUT DIMENSIONS (pixels), not pre-calculated groups!
+        // The Dispatch() function internally divides by WorkGroupSize to calculate groups.
+        _kernelConvertToBayer.Dispatch(cmd, bayerOutput.Width, bayerOutput.Height, 1);
         
         _ctx.EndSingleTimeCommands(cmd);
     }
@@ -1955,13 +2070,11 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         
         _kernelRms!.BindPipeline(cmd);
         _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _kernelRms.PipelineLayout, 0, 1, &set, 0, null);
-        
-        // Dispatch one thread per tile
-        uint groupsX = (uint)Math.Ceiling((double)nTilesX / 16.0);
-        uint groupsY = (uint)Math.Ceiling((double)nTilesY / 16.0);
-        Console.WriteLine($"[ExecuteCalculateRms] Input: {rgbaInput.Width}x{rgbaInput.Height}, Output: {rmsOutput.Width}x{rmsOutput.Height}, Dispatch: {groupsX}x{groupsY}");
-        _kernelRms.Dispatch(cmd, groupsX, groupsY, 1);
-        
+
+        // FIX: Dispatch one thread per tile - pass tile counts, not pre-calculated groups!
+        Console.WriteLine($"[ExecuteCalculateRms] Input: {rgbaInput.Width}x{rgbaInput.Height}, Output: {rmsOutput.Width}x{rmsOutput.Height}, Dispatch: {nTilesX}x{nTilesY}");
+        _kernelRms.Dispatch(cmd, (uint)nTilesX, (uint)nTilesY, 1);
+
         _ctx.EndSingleTimeCommands(cmd);
     }
     
@@ -1989,13 +2102,12 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         _kernelDeconvoluteFrequency!.BindPipeline(cmd);
         _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _kernelDeconvoluteFrequency.PipelineLayout, 0, 1, &set, 0, null);
         
-        // Dispatch per tile grid
-        uint groupsX = (uint)Math.Ceiling((double)nTilesX / 16.0);
-        uint groupsY = (uint)Math.Ceiling((double)nTilesY / 16.0);
-        _kernelDeconvoluteFrequency.Dispatch(cmd, groupsX, groupsY, 1);
+        // FIX: Dispatch expects THREAD COUNTS (nTilesX, nTilesY for tile-based shader)
+        // Deconvolution operates per-tile, so pass tile counts
+        _kernelDeconvoluteFrequency.Dispatch(cmd, (uint)nTilesX, (uint)nTilesY, 1);
         _ctx.EndSingleTimeCommands(cmd);
     }
-    
+
     private void ExecuteReduceArtifacts(VulkanImage outputTexture, VulkanImage refTexture, int nTilesX, int nTilesY, int tileSize, int[] blackLevel)
     {
         EnsureMergeFrequencyPipeline();
@@ -2023,11 +2135,12 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         
         _kernelArtifactsTileBorder!.BindPipeline(cmd);
         _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _kernelArtifactsTileBorder.PipelineLayout, 0, 1, &set, 0, null);
-        
-        // Dispatch per tile grid
-        uint groupsX = (uint)Math.Ceiling((double)nTilesX / 16.0);
-        uint groupsY = (uint)Math.Ceiling((double)nTilesY / 16.0);
-        _kernelArtifactsTileBorder.Dispatch(cmd, groupsX, groupsY, 1);
+
+        // FIX: reduce_artifacts operates PER-PIXEL, so dispatch pixel dimensions, not tile counts!
+        // The shader uses gid.xy as pixel coordinates, so we need outputTexture dimensions
+        uint pixelWidth = outputTexture.Width;
+        uint pixelHeight = outputTexture.Height;
+        _kernelArtifactsTileBorder.Dispatch(cmd, pixelWidth, pixelHeight, 1);
         _ctx.EndSingleTimeCommands(cmd);
     }
     private void ExecuteAvgPool(VulkanImage input, VulkanImage output, int scale, RawImage rawInfo)
@@ -2218,11 +2331,9 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                 
                 _kernelUpsampleAlignment!.BindPipeline(cmdBuffer);
                 _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, _kernelUpsampleAlignment.PipelineLayout, 0, 1, &setUp, 0, null);
-                
-                // Dispatch over OUTPUT size
-                uint gX = (uint)Math.Ceiling(nTilesX / 16.0);
-                uint gY = (uint)Math.Ceiling(nTilesY / 16.0);
-                _kernelUpsampleAlignment.Dispatch(cmdBuffer, gX, gY, 1);
+
+                // FIX: Dispatch expects tile counts, not pre-calculated groups!
+                _kernelUpsampleAlignment.Dispatch(cmdBuffer, (uint)nTilesX, (uint)nTilesY, 1);
                 
                 // Barrier
                 var barrier = new MemoryBarrier { SType = StructureType.MemoryBarrier, SrcAccessMask = AccessFlags.ShaderWriteBit, DstAccessMask = AccessFlags.ShaderReadBit };
@@ -2272,10 +2383,9 @@ public unsafe class VulkanComputePipeline : IComputePipeline
             
             _kernelCorrectUpsamplingError!.BindPipeline(cmdBuffer);
             _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, _kernelCorrectUpsamplingError.PipelineLayout, 0, 1, &setCorrect, 0, null);
-            
-            uint gXC = (uint)Math.Ceiling(nTilesX / 16.0);
-            uint gYC = (uint)Math.Ceiling(nTilesY / 16.0);
-            _kernelCorrectUpsamplingError.Dispatch(cmdBuffer, gXC, gYC, 1);
+
+            // FIX: Dispatch expects tile counts, not pre-calculated groups!
+            _kernelCorrectUpsamplingError.Dispatch(cmdBuffer, (uint)nTilesX, (uint)nTilesY, 1);
             
             // Barrier
             var barrier2 = new MemoryBarrier { SType = StructureType.MemoryBarrier, SrcAccessMask = AccessFlags.ShaderWriteBit, DstAccessMask = AccessFlags.ShaderReadBit };
@@ -2307,8 +2417,9 @@ public unsafe class VulkanComputePipeline : IComputePipeline
             var kernelDiff = _kernelTileDiff25!; // Assuming uniform exposure for now
             kernelDiff.BindPipeline(cmdBuffer);
             _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, kernelDiff.PipelineLayout, 0, 1, &setDiff, 0, null);
-            
-            kernelDiff.Dispatch(cmdBuffer, gXC, gYC, 1);
+
+            // FIX: Dispatch expects tile counts, not pre-calculated groups!
+            kernelDiff.Dispatch(cmdBuffer, (uint)nTilesX, (uint)nTilesY, 1);
             
             // Barrier
             _ctx.Vk.CmdPipelineBarrier(cmdBuffer, PipelineStageFlags.ComputeShaderBit, PipelineStageFlags.ComputeShaderBit, 0, 1, &barrier2, 0, null, 0, null);
@@ -2359,7 +2470,7 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         }
     }
     
-    private void ExecuteWarp(VulkanImage altImage, VulkanImage output, VulkanImage alignment, TileInfo tileInfo)
+    private void ExecuteWarp(VulkanImage altImage, VulkanImage output, VulkanImage alignment, TileInfo tileInfo, int padLeft = 0, int padTop = 0)
     {
         Console.WriteLine($"╔════════════════════════════════════════════════════════════════");
         Console.WriteLine($"║ [WARP DEBUG] ExecuteWarp CALLED");
@@ -2369,6 +2480,7 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         Console.WriteLine($"║       output:            {output.Width}x{output.Height} (format: {output.Format})");
         Console.WriteLine($"║       alignment:         {alignment.Width}x{alignment.Height} (format: {alignment.Format})");
         Console.WriteLine($"║       TileInfo: TileSize={tileInfo.TileSize}, NTilesX={tileInfo.NTilesX}, NTilesY={tileInfo.NTilesY}");
+        Console.WriteLine($"║       Padding: padLeft={padLeft}, padTop={padTop}");
 
         // Check altImage input data
         Console.WriteLine($"║ [2/8] Checking input texture data...");
@@ -2392,6 +2504,7 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         {
             // Alignment is R16G16B16A16Sint - need to read as shorts
             short[] alignData = alignment.GetData<short>();
+            int nTilesX = tileInfo.NTilesX;
             Console.WriteLine($"║       alignment data length: {alignData.Length} shorts ({alignData.Length/4} int4 values)");
             if (alignData.Length >= 8)
             {
@@ -2399,6 +2512,23 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                 Console.WriteLine($"║       First alignment vector: ({alignData[0]}, {alignData[1]}, {alignData[2]}, {alignData[3]})");
                 int midIdx = (alignData.Length / 2) / 4 * 4; // Align to int4 boundary
                 Console.WriteLine($"║       Mid alignment vector:   ({alignData[midIdx]}, {alignData[midIdx+1]}, {alignData[midIdx+2]}, {alignData[midIdx+3]})");
+
+                // Check alignment at tiles covering the data region (padLeft=124, padTop=132 with HalfTileSize=16)
+                // x_grid for pixel 124 = (124+0.5)/16 - 1 = 6.78 → tiles 6 and 7
+                // y_grid for pixel 132 = (132+0.5)/16 - 1 = 7.28 → tiles 7 and 8
+                int[] checkTiles = new[] { 6, 7, 8 };
+                foreach (int tx in checkTiles)
+                {
+                    foreach (int ty in checkTiles)
+                    {
+                        int tileIdx = ty * nTilesX + tx;
+                        int shortIdx = tileIdx * 4;
+                        if (shortIdx + 3 < alignData.Length)
+                        {
+                            Console.WriteLine($"║       Alignment at tile ({tx},{ty}): ({alignData[shortIdx]}, {alignData[shortIdx+1]}, {alignData[shortIdx+2]}, {alignData[shortIdx+3]})");
+                        }
+                    }
+                }
             }
             // Check if alignment has any non-zero values
             bool hasNonZero = false;
@@ -2409,28 +2539,39 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         
         EnsureAlignPipeline();
          
+        // For Bayer images (mosaic_pattern_width=2), DownscaleFactor = 2
+        // Swift warp_texture passes: (downscale_factor==2 ? 1 : downscale_factor) * tile_size
+        // So for Bayer: half_tile_size = 1 * tile_size = tile_size (NOT tile_size/2!)
+        int downscaleFactor = 2; // Bayer
+        int halfTileSizeForWarp = (downscaleFactor == 2 ? 1 : downscaleFactor) * tileInfo.TileSize;
+
         var alignParams = new AlignParams
         {
             Scale = 1,
             BlackLevel = 0.0f,
             FactorRed = 1.0f, FactorGreen = 1.0f, FactorBlue = 1.0f,
-            // DownscaleFactor should match downscale_factor_array[0] from Swift
-            // For Bayer images (mosaic_pattern_width=2), this is 2
-            DownscaleFactor = 2,
-            TileSize = tileInfo.TileSize, 
+            DownscaleFactor = downscaleFactor,
+            TileSize = tileInfo.TileSize,
             SearchDist = 0, WeightSSD = 0,
-            HalfTileSize = tileInfo.TileSize / 2,
+            HalfTileSize = halfTileSizeForWarp,
             NumTilesX = tileInfo.NTilesX,
             NumTilesY = tileInfo.NTilesY,
-            UniformExposure = 0
+            UniformExposure = 0,
+            // Warp clamping params - clamp read coordinates to valid data region
+            PadLeft = padLeft,
+            PadTop = padTop,
+            ImageWidth = (int)altImage.Width,
+            ImageHeight = (int)altImage.Height
         };
-        
+
         Console.WriteLine($"║ [4/8] AlignParams:");
         Console.WriteLine($"║       Scale={alignParams.Scale}, BlackLevel={alignParams.BlackLevel}");
         Console.WriteLine($"║       DownscaleFactor={alignParams.DownscaleFactor}");
         Console.WriteLine($"║       TileSize={alignParams.TileSize}, HalfTileSize={alignParams.HalfTileSize}");
         Console.WriteLine($"║       NumTilesX={alignParams.NumTilesX}, NumTilesY={alignParams.NumTilesY}");
         Console.WriteLine($"║       SearchDist={alignParams.SearchDist}, WeightSSD={alignParams.WeightSSD}");
+        Console.WriteLine($"║       PadLeft={alignParams.PadLeft}, PadTop={alignParams.PadTop}");
+        Console.WriteLine($"║       ImageWidth={alignParams.ImageWidth}, ImageHeight={alignParams.ImageHeight}");
         
         using var paramBuffer = new VulkanBuffer(_ctx, (ulong)Marshal.SizeOf<AlignParams>(), 
             BufferUsageFlags.UniformBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
@@ -2742,6 +2883,10 @@ public unsafe class VulkanComputePipeline : IComputePipeline
     
     private void ExecutePrepare(VulkanImage input, VulkanImage output, RawImage rawInfo, int padLeft, int padTop)
     {
+        // CRITICAL: Fill output with zeros FIRST (Swift does this at texture.swift:638)
+        // This ensures the padding region is zeros, which is important for alignment
+        FillWithZeros(output);
+
         // 1. Ensure Pipeline & Layout
         EnsurePreparePipeline();
         

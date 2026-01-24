@@ -32,6 +32,12 @@ cbuffer AlignParams : register(b0)
 
     // correct_upsampling_error params
     int UniformExposure;
+
+    // Warp clamping params (to prevent reads into zero-padding region)
+    int PadLeft;
+    int PadTop;
+    int ImageWidth;   // Total image width (including padding)
+    int ImageHeight;  // Total image height (including padding)
 };
 
 // -------------------------------------------------------------------------
@@ -626,46 +632,66 @@ void upsample_alignment(uint3 DTid : SV_DispatchThreadID)
 // -------------------------------------------------------------------------
 // warp_texture_bayer
 // -------------------------------------------------------------------------
+// Helper function to clamp read coordinates to valid data region
+// This prevents reading from zero-padding when alignment vectors are too large
+int2 clamp_read_coords(int readX, int readY)
+{
+    // Clamp to valid data region [PadLeft, ImageWidth-PadLeft) and [PadTop, ImageHeight-PadTop)
+    // Note: PadRight = PadLeft, PadBottom = PadTop for symmetric padding (approximately)
+    int minX = PadLeft;
+    int maxX = ImageWidth - PadLeft - 1;
+    int minY = PadTop;
+    int maxY = ImageHeight - PadTop - 1;
+
+    return int2(clamp(readX, minX, maxX), clamp(readY, minY, maxY));
+}
+
 [numthreads(16, 16, 1)]
 void warp_texture_bayer(uint3 DTid : SV_DispatchThreadID)
 {
     uint2 gid = DTid.xy;
     int x = (int)gid.x;
     int y = (int)gid.y;
-    
+
     float half_tile_size_float = (float)HalfTileSize;
-    
+
     float x_grid = (x + 0.5f) / half_tile_size_float - 1.0f;
     float y_grid = (y + 0.5f) / half_tile_size_float - 1.0f;
-    
+
     int x_grid_floor = (int)(max(0.0f, floor(x_grid)) + 0.1f);
     int y_grid_floor = (int)(max(0.0f, floor(y_grid)) + 0.1f);
     int x_grid_ceil  = (int)(min(ceil(x_grid), (float)NumTilesX - 1.0f) + 0.1f);
     int y_grid_ceil  = (int)(min(ceil(y_grid), (float)NumTilesY - 1.0f) + 0.1f);
-    
+
     float weight_x = ((x % HalfTileSize) + 0.5f) / (2.0f * half_tile_size_float);
     float weight_y = ((y % HalfTileSize) + 0.5f) / (2.0f * half_tile_size_float);
-    
+
     int4 prev_align0 = DownscaleFactor * PrevAlignment.Load(int3(x_grid_floor, y_grid_floor, 0));
     int4 prev_align1 = DownscaleFactor * PrevAlignment.Load(int3(x_grid_ceil,  y_grid_floor, 0));
     int4 prev_align2 = DownscaleFactor * PrevAlignment.Load(int3(x_grid_floor, y_grid_ceil, 0));
     int4 prev_align3 = DownscaleFactor * PrevAlignment.Load(int3(x_grid_ceil,  y_grid_ceil, 0));
-    
-    float val0 = InTexture.Load(int3(x + prev_align0.x, y + prev_align0.y, 0)).r;
+
+    // Clamp read coordinates to valid data region to prevent reading from zero-padding
+    int2 read0 = clamp_read_coords(x + prev_align0.x, y + prev_align0.y);
+    int2 read1 = clamp_read_coords(x + prev_align1.x, y + prev_align1.y);
+    int2 read2 = clamp_read_coords(x + prev_align2.x, y + prev_align2.y);
+    int2 read3 = clamp_read_coords(x + prev_align3.x, y + prev_align3.y);
+
+    float val0 = InTexture.Load(int3(read0.x, read0.y, 0)).r;
     float w0 = (1.0f - weight_x) * (1.0f - weight_y);
-    
-    float val1 = InTexture.Load(int3(x + prev_align1.x, y + prev_align1.y, 0)).r;
+
+    float val1 = InTexture.Load(int3(read1.x, read1.y, 0)).r;
     float w1 = weight_x * (1.0f - weight_y);
-    
-    float val2 = InTexture.Load(int3(x + prev_align2.x, y + prev_align2.y, 0)).r;
+
+    float val2 = InTexture.Load(int3(read2.x, read2.y, 0)).r;
     float w2 = (1.0f - weight_x) * weight_y;
-    
-    float val3 = InTexture.Load(int3(x + prev_align3.x, y + prev_align3.y, 0)).r;
+
+    float val3 = InTexture.Load(int3(read3.x, read3.y, 0)).r;
     float w3 = weight_x * weight_y;
-    
+
     float pixel_value = val0 * w0 + val1 * w1 + val2 * w2 + val3 * w3;
     float total_weight = w0 + w1 + w2 + w3;
-    
+
     OutTexture[gid] = pixel_value / total_weight;
 }
 

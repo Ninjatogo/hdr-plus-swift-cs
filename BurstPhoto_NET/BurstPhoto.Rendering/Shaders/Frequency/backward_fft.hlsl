@@ -5,6 +5,14 @@
 
 #include "FrequencyCommon.hlsli"
 
+// DEBUG MODE:
+// 0 = Normal FFT operation
+// 1 = Output gradient test pattern (bypasses FFT)
+// 2 = Output input FT data directly (tests if input data exists)
+// 3 = Output DC component only (sum of all input values / normalization)
+// 4 = Copy DC bin (freq 0,0) directly to all output pixels (tests if DC is correct after forward FFT)
+#define DEBUG_GRADIENT_MODE 0
+
 [numthreads(16, 16, 1)]
 void CSMain(uint3 DTid : SV_DispatchThreadID)
 {
@@ -32,6 +40,64 @@ void CSMain(uint3 DTid : SV_DispatchThreadID)
     int ts = TileSize;
     int m0 = gid.x * ts;
     int n0 = gid.y * ts;
+
+#if DEBUG_GRADIENT_MODE == 1
+    // DEBUG: Write a gradient pattern to ALL pixels in this tile
+    for (int dy = 0; dy < ts; dy++) {
+        for (int dx = 0; dx < ts; dx++) {
+            int px = m0 + dx;
+            int py = n0 + dy;
+            float4 debugColor = float4(
+                (float)px / (float)outputWidth,
+                (float)py / (float)outputHeight,
+                (float)gid.x / (float)nTilesX,
+                (float)gid.y / (float)nTilesY
+            );
+            OutputTexture[int2(px, py)] = debugColor * 16000.0f;
+        }
+    }
+    return;
+#elif DEBUG_GRADIENT_MODE == 2
+    // DEBUG: Output the input FT data directly (real parts only, scaled)
+    // This tests whether the input frequency domain data exists
+    for (int dy = 0; dy < ts; dy++) {
+        for (int dx = 0; dx < ts; dx++) {
+            // Read real part of complex FT data
+            float4 realPart = RefTexture.Load(int3(2*(m0+dx), n0+dy, 0));
+            OutputTexture[int2(m0+dx, n0+dy)] = abs(realPart);  // Use abs to see magnitude
+        }
+    }
+    return;
+#elif DEBUG_GRADIENT_MODE == 3
+    // DEBUG: Output DC component - sum all input values and normalize
+    // This is effectively what the FFT should produce for uniform input
+    float4 dcSum = (float4)0.0f;
+    for (int dy = 0; dy < ts; dy++) {
+        for (int dx = 0; dx < ts; dx++) {
+            dcSum += RefTexture.Load(int3(2*(m0+dx), n0+dy, 0));
+        }
+    }
+    float4 dcNorm = dcSum / (float)(NumTextures * ts * ts);
+    for (int dy2 = 0; dy2 < ts; dy2++) {
+        for (int dx2 = 0; dx2 < ts; dx2++) {
+            OutputTexture[int2(m0+dx2, n0+dy2)] = dcNorm;
+        }
+    }
+    return;
+#elif DEBUG_GRADIENT_MODE == 4
+    // DEBUG: Copy DC bin (frequency 0,0) from the frequency domain input
+    // The DC bin is at position (2*m0, n0) in the FT texture (real part)
+    // After forward FFT, DC should equal sum of all spatial values (with cosine window)
+    // After inverse, dividing by N gives the average
+    float4 dcReal = RefTexture.Load(int3(2*m0, n0, 0));  // Real part of DC
+    float4 dcNormalized = dcReal / (float)(NumTextures * ts * ts);
+    for (int dy = 0; dy < ts; dy++) {
+        for (int dx = 0; dx < ts; dx++) {
+            OutputTexture[int2(m0+dx, n0+dy)] = dcNormalized;
+        }
+    }
+    return;
+#endif
     int sz14 = ts / 4;
     int sz24 = ts / 2;
     int sz34 = (ts / 4) * 3;

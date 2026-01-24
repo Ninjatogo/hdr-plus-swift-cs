@@ -61,6 +61,7 @@ public class Program
             config.AddCommand<ProcessCommand>("process")
                 .WithDescription("Process a burst of raw images to produce a denoised output.");
             config.AddCommand<DebugLibRawCommand>("debug-libraw");
+            config.PropagateExceptions();
         });
 
         return await app.RunAsync(args);

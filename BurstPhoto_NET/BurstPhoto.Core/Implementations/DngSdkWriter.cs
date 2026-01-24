@@ -41,7 +41,6 @@ public class DngSdkWriter : IRawImageWriter, IDisposable
 
     public DngSdkWriter()
     {
-        EnsureInitialized();
     }
 
     private static void EnsureInitialized()
@@ -73,6 +72,7 @@ public class DngSdkWriter : IRawImageWriter, IDisposable
 
     public void Write(string path, RawImage image)
     {
+        EnsureInitialized();
         if (string.IsNullOrEmpty(image.SourcePath))
         {
             throw new ArgumentException(

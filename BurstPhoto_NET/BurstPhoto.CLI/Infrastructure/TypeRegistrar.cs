@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Spectre.Console.Cli;
+using Spectre.Console;
 using System;
 
 namespace BurstPhoto.CLI.Infrastructure;
@@ -46,7 +47,15 @@ public class TypeResolver : ITypeResolver, IDisposable
     public object? Resolve(Type? type)
     {
         if (type == null) return null;
-        return _provider.GetService(type);
+        try
+        {
+            return _provider.GetService(type);
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.WriteException(ex);
+            throw;
+        }
     }
 
     public void Dispose()
