@@ -614,17 +614,38 @@ void correct_upsampling_error(uint3 DTid : SV_DispatchThreadID)
 // -------------------------------------------------------------------------
 // upsample_alignment
 // -------------------------------------------------------------------------
+// Upsample scale factors (set by C# code based on input/output dimensions)
+// Added to AlignParams cbuffer: UpsampleScaleX, UpsampleScaleY
+
 [numthreads(16, 16, 1)]
 void upsample_alignment(uint3 DTid : SV_DispatchThreadID)
 {
-    // Upsample integer alignment vectors by factor of 2 (nearest neighbor)
+    // Upsample integer alignment vectors using nearest neighbor
     // Input: PrevAlignment (smaller), Output: OutAlignment (larger)
     // Coords in DTid are for the Output texture
-    
-    // Read from smaller texture at half coordinates
-    // Using simple nearest neighbor (floor of coord / 2)
-    int4 val = PrevAlignment.Load(int3(DTid.xy / 2, 0));
-    
+
+    // Get input dimensions to calculate proper scale
+    uint inWidth, inHeight;
+    PrevAlignment.GetDimensions(inWidth, inHeight);
+
+    uint outWidth, outHeight;
+    OutAlignment.GetDimensions(outWidth, outHeight);
+
+    // Compute scale factors (matches Swift: scale_x = output_width / input_width)
+    float scale_x = (float)outWidth / (float)inWidth;
+    float scale_y = (float)outHeight / (float)inHeight;
+
+    // Match Swift's upsample_nearest_int: x = round(gid.x / scale_x)
+    // This ensures proper nearest-neighbor centering
+    int srcX = (int)round((float)DTid.x / scale_x);
+    int srcY = (int)round((float)DTid.y / scale_y);
+
+    // Clamp to valid input range (Metal returns 0 for out-of-bounds, we clamp)
+    srcX = clamp(srcX, 0, (int)inWidth - 1);
+    srcY = clamp(srcY, 0, (int)inHeight - 1);
+
+    int4 val = PrevAlignment.Load(int3(srcX, srcY, 0));
+
     // Write to output
     OutAlignment[DTid.xy] = val;
 }
@@ -632,18 +653,21 @@ void upsample_alignment(uint3 DTid : SV_DispatchThreadID)
 // -------------------------------------------------------------------------
 // warp_texture_bayer
 // -------------------------------------------------------------------------
-// Helper function to clamp read coordinates to valid data region
-// This prevents reading from zero-padding when alignment vectors are too large
-int2 clamp_read_coords(int readX, int readY)
-{
-    // Clamp to valid data region [PadLeft, ImageWidth-PadLeft) and [PadTop, ImageHeight-PadTop)
-    // Note: PadRight = PadLeft, PadBottom = PadTop for symmetric padding (approximately)
-    int minX = PadLeft;
-    int maxX = ImageWidth - PadLeft - 1;
-    int minY = PadTop;
-    int maxY = ImageHeight - PadTop - 1;
+// Matches Swift/Metal align.metal warp_texture_bayer (lines 587-638).
+// Metal's texture.read() on out-of-bounds returns 0 (border color).
+// HLSL/Vulkan Load() behavior is undefined for out-of-bounds, so we
+// explicitly check bounds and return 0 for invalid reads.
+// Zero values in misaligned regions cause the frequency domain merge to
+// fall back to the reference frame (high Wiener weight), preventing blur.
 
-    return int2(clamp(readX, minX, maxX), clamp(readY, minY, maxY));
+// Helper function to safely read texture with bounds checking
+// Returns 0.0 for out-of-bounds coordinates (matching Metal behavior)
+float SafeTextureRead(Texture2D<float> tex, int readX, int readY)
+{
+    // Check bounds: coordinates must be within [0, ImageWidth) x [0, ImageHeight)
+    if (readX < 0 || readY < 0 || readX >= ImageWidth || readY >= ImageHeight)
+        return 0.0f;
+    return tex.Load(int3(readX, readY, 0)).r;
 }
 
 [numthreads(16, 16, 1)]
@@ -671,22 +695,17 @@ void warp_texture_bayer(uint3 DTid : SV_DispatchThreadID)
     int4 prev_align2 = DownscaleFactor * PrevAlignment.Load(int3(x_grid_floor, y_grid_ceil, 0));
     int4 prev_align3 = DownscaleFactor * PrevAlignment.Load(int3(x_grid_ceil,  y_grid_ceil, 0));
 
-    // Clamp read coordinates to valid data region to prevent reading from zero-padding
-    int2 read0 = clamp_read_coords(x + prev_align0.x, y + prev_align0.y);
-    int2 read1 = clamp_read_coords(x + prev_align1.x, y + prev_align1.y);
-    int2 read2 = clamp_read_coords(x + prev_align2.x, y + prev_align2.y);
-    int2 read3 = clamp_read_coords(x + prev_align3.x, y + prev_align3.y);
-
-    float val0 = InTexture.Load(int3(read0.x, read0.y, 0)).r;
+    // Safe reads with explicit bounds checking (returns 0 for out-of-bounds, matching Metal)
+    float val0 = SafeTextureRead(InTexture, x + prev_align0.x, y + prev_align0.y);
     float w0 = (1.0f - weight_x) * (1.0f - weight_y);
 
-    float val1 = InTexture.Load(int3(read1.x, read1.y, 0)).r;
+    float val1 = SafeTextureRead(InTexture, x + prev_align1.x, y + prev_align1.y);
     float w1 = weight_x * (1.0f - weight_y);
 
-    float val2 = InTexture.Load(int3(read2.x, read2.y, 0)).r;
+    float val2 = SafeTextureRead(InTexture, x + prev_align2.x, y + prev_align2.y);
     float w2 = (1.0f - weight_x) * weight_y;
 
-    float val3 = InTexture.Load(int3(read3.x, read3.y, 0)).r;
+    float val3 = SafeTextureRead(InTexture, x + prev_align3.x, y + prev_align3.y);
     float w3 = weight_x * weight_y;
 
     float pixel_value = val0 * w0 + val1 * w1 + val2 * w2 + val3 * w3;
@@ -755,7 +774,8 @@ void warp_texture_xtrans(uint3 DTid : SV_DispatchThreadID)
             float curr_weight = weight_x * weight_y; // Metal: weight_x * weight_y
             
             total_weight += curr_weight;
-            total_intensity += curr_weight * InTexture.Load(int3(x2_pix, y2_pix, 0)).r;
+            // Safe read with bounds check (returns 0 for out-of-bounds, matching Metal)
+            total_intensity += curr_weight * SafeTextureRead(InTexture, x2_pix, y2_pix);
         }
     }
     

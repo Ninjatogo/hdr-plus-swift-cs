@@ -109,14 +109,17 @@ public struct FrequencyParams
     public float MaxMotionNorm;
     public int TileSize;
     public int UniformExposure;
-    
+
     // Additional params
-    public int NumTextures; 
+    public int NumTextures;
     public float ExposureFactor;
     public float WhiteLevel;
-    public float BlackLevelMean; 
+    public float BlackLevelMean;
     public float MeanMismatch;
-    
-    public int Padding0;
-    public int Padding1;
+
+    // Per-channel black levels for reduce_artifacts_tile_border
+    public int BlackLevel0;
+    public int BlackLevel1;
+    public int BlackLevel2;
+    public int BlackLevel3;
 }

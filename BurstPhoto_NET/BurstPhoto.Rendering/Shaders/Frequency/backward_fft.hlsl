@@ -138,8 +138,15 @@ void CSMain(uint3 DTid : SV_DispatchThreadID)
             // Check Metal: `coefRe = cos(angle*2*(dm+tile_size_14));`. Correct. Copy paste err.
             Re11 = Re0 + coefRe*Re1 - coefIm*Im1; Im11 = Im0 + coefIm*Re1 + coefRe*Im1;
             Re33 = Re2 + coefRe*Re3 - coefIm*Im3; Im33 = Im2 + coefIm*Re3 + coefRe*Im3;
-            Re0 = Re00 + cos(angle*dm)*Re22 - sin(angle*dm)*Im22; Re2 = Re00 + cos(angle*(dm+sz24))*Re22 - sin(angle*(dm+sz24))*Im22;
-            Re1 = Re11 + cos(angle*(dm+sz14))*Re33 - sin(angle*(dm+sz14))*Im33; Re3 = Re11 + cos(angle*(dm+sz34))*Re33 - sin(angle*(dm+sz34))*Im33;
+            // Second butterfly - MUST compute both Re AND Im (was missing Im computation!)
+            Re0 = Re00 + cos(angle*dm)*Re22 - sin(angle*dm)*Im22;
+            Im0 = Im00 + sin(angle*dm)*Re22 + cos(angle*dm)*Im22;
+            Re2 = Re00 + cos(angle*(dm+sz24))*Re22 - sin(angle*(dm+sz24))*Im22;
+            Im2 = Im00 + sin(angle*(dm+sz24))*Re22 + cos(angle*(dm+sz24))*Im22;
+            Re1 = Re11 + cos(angle*(dm+sz14))*Re33 - sin(angle*(dm+sz14))*Im33;
+            Im1 = Im11 + sin(angle*(dm+sz14))*Re33 + cos(angle*(dm+sz14))*Im33;
+            Re3 = Re11 + cos(angle*(dm+sz34))*Re33 - sin(angle*(dm+sz34))*Im33;
+            Im3 = Im11 + sin(angle*(dm+sz34))*Re33 + cos(angle*(dm+sz34))*Im33;
             tmp_tile[n_tmp+2*dm+0] = Re0; tmp_tile[n_tmp+2*dm+1] = -Im0;
             tmp_tile[n_tmp+2*dm+sz24+0] = Re1; tmp_tile[n_tmp+2*dm+sz24+1] = -Im1;
             tmp_tile[n_tmp+2*dm+ts+0] = Re2; tmp_tile[n_tmp+2*dm+ts+1] = -Im2;

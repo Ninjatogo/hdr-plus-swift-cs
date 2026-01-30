@@ -24,6 +24,12 @@ cbuffer FrequencyParams : register(b0)
     float WhiteLevel;
     float BlackLevelMean;
     float MeanMismatch;
+
+    // Per-channel black levels for reduce_artifacts_tile_border
+    int BlackLevel0;
+    int BlackLevel1;
+    int BlackLevel2;
+    int BlackLevel3;
 };
 
 // -------------------------------------------------------------------------

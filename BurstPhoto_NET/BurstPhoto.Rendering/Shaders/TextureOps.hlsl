@@ -131,10 +131,35 @@ void convert_to_rgba(uint3 DTid : SV_DispatchThreadID)
     OutTextureRGBA[gid] = float4(p0, p1, p2, p3);
 }
 
+// DEBUG_CONVERT_TO_BAYER modes:
+// 0 = Normal operation
+// 1 = Output X coordinate as gradient (to detect X-axis mirroring)
+// 2 = Output Y coordinate as gradient (to detect Y-axis mirroring)
+// 3 = Output block ID to show tile boundaries
+#define DEBUG_CONVERT_TO_BAYER 0
+
 [numthreads(16, 16, 1)]
 void convert_to_bayer(uint3 DTid : SV_DispatchThreadID)
 {
     uint2 gid = DTid.xy;
+
+#if DEBUG_CONVERT_TO_BAYER == 1
+    // X gradient: value increases linearly with X coordinate
+    // If mirrored, you'll see the gradient reverse within blocks
+    OutTextureFloat[gid] = (float)gid.x;
+    return;
+#elif DEBUG_CONVERT_TO_BAYER == 2
+    // Y gradient
+    OutTextureFloat[gid] = (float)gid.y;
+    return;
+#elif DEBUG_CONVERT_TO_BAYER == 3
+    // Block ID pattern - shows which 16x16 workgroup each pixel belongs to
+    uint blockX = gid.x / 16;
+    uint blockY = gid.y / 16;
+    OutTextureFloat[gid] = (float)(blockX * 1000 + blockY);
+    return;
+#endif
+
     uint2 inPos = gid / 2;
     float4 rgba = InTextureRGBA.Load(int3(inPos, 0));
 
@@ -204,6 +229,19 @@ void add_texture(uint3 DTid : SV_DispatchThreadID)
     // Metal: out_texture += in_texture / n_textures
     float n = (float)NumTextures;
     OutTextureFloat[DTid.xy] = acc + val / n;
+}
+
+[numthreads(16, 16, 1)]
+void add_texture_rgba(uint3 DTid : SV_DispatchThreadID)
+{
+    // t2=Input RGBA, u12=Accumulator RGBA (RW)
+    // Metal: out_texture += in_texture.r / n_textures (single channel)
+    // Swift mismatch textures use only .r channel
+    float4 inVal = InTextureRGBA.Load(int3(DTid.xy, 0));
+    float4 acc = OutTextureRGBA[DTid.xy]; // Read RW
+    float n = (float)NumTextures;
+    // Only the .r channel matters for mismatch, but accumulate all for consistency
+    OutTextureRGBA[DTid.xy] = acc + inVal / n;
 }
 
 [numthreads(16, 16, 1)]

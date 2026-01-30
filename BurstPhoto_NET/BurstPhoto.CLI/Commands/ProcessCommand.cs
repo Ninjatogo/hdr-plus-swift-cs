@@ -57,6 +57,10 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
         [Description("Enable debug output: saves intermediate DNGs to DebugOutput folder")]
         public bool DebugDump { get; set; } = false;
         
+        [CommandOption("-v|--validate-fft")]
+        [Description("Run FFT validation tests (Parseval's theorem, round-trip, DC component). Stops early if validation fails.")]
+        public bool ValidateFft { get; set; } = false;
+        
         [CommandOption("--log")]
         [Description("Save console output to a log file (default: logs/process_YYYYMMDD_HHMMSS.log)")]
         public bool Log { get; set; } = false;
@@ -72,6 +76,10 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
         [CommandOption("--list-gpus")]
         [Description("List available GPU devices and exit")]
         public bool ListGpus { get; set; } = false;
+
+        [CommandOption("--skip-reduce-artifacts")]
+        [Description("Debug: Skip the reduce_artifacts_tile_border pass to test if it causes the 8x8 grid pattern")]
+        public bool SkipReduceArtifacts { get; set; } = false;
     }
 
     public override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
@@ -110,6 +118,8 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
                 Console.WriteLine($"[LOG] Output being saved to: {logPath}");
             }
             // Parse options
+            Console.WriteLine($"[CLI DEBUG] settings.ValidateFft = {settings.ValidateFft}");
+            Console.WriteLine($"[CLI DEBUG] settings.DebugDump = {settings.DebugDump}");
             var options = new ProcessingOptions
             {
                 Merging = ParseEnum<MergingAlgorithm>(settings.Algorithm, "algorithm"),
@@ -120,7 +130,9 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
                 OutputBitDepth = settings.BitDepth.Equals("16Bit", StringComparison.OrdinalIgnoreCase) 
                     ? OutputBitDepthOption.Bit16 
                     : OutputBitDepthOption.Native,
-                EnableDebugDump = settings.DebugDump
+                EnableDebugDump = settings.DebugDump,
+                EnableFftValidation = settings.ValidateFft,
+                SkipReduceArtifacts = settings.SkipReduceArtifacts
             };
 
             var progress = new ProcessingProgress();

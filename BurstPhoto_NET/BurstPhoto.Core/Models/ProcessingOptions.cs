@@ -76,6 +76,18 @@ public class ProcessingOptions
     /// Enable debug output: saves intermediate DNGs to DebugOutput folder.
     /// </summary>
     public bool EnableDebugDump { get; set; } = false;
+    
+    /// <summary>
+    /// Enable FFT validation: runs mathematical tests (Parseval's theorem, round-trip, DC component)
+    /// to verify each FFT pipeline stage is working correctly. Stops early if validation fails.
+    /// </summary>
+    public bool EnableFftValidation { get; set; } = false;
+
+    /// <summary>
+    /// Debug option: Skip the reduce_artifacts_tile_border pass to test if it's causing the 8x8 grid pattern.
+    /// When true, the tile boundary blending is disabled.
+    /// </summary>
+    public bool SkipReduceArtifacts { get; set; } = false;
 
     /// <summary>
     /// Gets the tile size in pixels for the given option.
