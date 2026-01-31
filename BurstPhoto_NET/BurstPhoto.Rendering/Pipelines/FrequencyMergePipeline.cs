@@ -270,36 +270,7 @@ public unsafe class FrequencyMergePipeline
         DispatchTileGrid(_kernelHighlightsNorm!, texHighlights, aligned);
 
         // 7. Forward FFT Aligned (per-tile FFT dispatch)
-        {
-            var inputData = aligned.GetData<float>();
-            double inputSum = 0;
-            var inputSamples = Math.Min(inputData.Length, 1000);
-            for (var i = 0; i < inputSamples; i++)
-            {
-                inputSum += Math.Abs(inputData[i]);
-            }
-            Console.WriteLine($"[FFT DEBUG] BEFORE FFT: aligned texture sum={inputSum:F2}, mean={inputSum / inputSamples:F4}, samples={inputSamples}, total_size={inputData.Length}");
-            Console.WriteLine($"[FFT DEBUG] Input dimensions: {aligned.Width}x{aligned.Height}, format={aligned.Format}");
-            Console.WriteLine($"[FFT DEBUG] Output dimensions: {texAlignedFt.Width}x{texAlignedFt.Height}, format={texAlignedFt.Format}");
-        }
-
         DispatchTile(_kernelForwardFft!, texAlignedFt, aligned);
-
-        // DEBUG: Check output from FFT
-        {
-            var outputData = texAlignedFt.GetData<float>();
-            double outputTotal = 0;
-            foreach (var t in outputData)
-            {
-                outputTotal += Math.Abs(t);
-            }
-
-            Console.WriteLine($"[FFT DEBUG] AFTER FFT: texAlignedFT TOTAL={outputTotal:F2}, mean={outputTotal / outputData.Length:F4}");
-            if (outputTotal < 0.01)
-            {
-                Console.WriteLine($"[FFT DEBUG] FFT OUTPUT IS ZERO!");
-            }
-        }
 
         // 8. Merge Frequency (per-tile dispatch)
         DispatchTile(_kernelMergeFrequency!, pixelAccumFt, refFt, texAlignedFt, texRms, texMismatch, texHighlights);
@@ -311,82 +282,64 @@ public unsafe class FrequencyMergePipeline
     /// </summary>
     public void ExecuteForwardFft(VulkanImage input, VulkanImage output, int tileSize, int width, int height)
     {
-        Console.WriteLine($"[EXEC FFT] *** ExecuteForwardFft CALLED ***");
+        EnsureKernels();
 
-        try
+        var nTilesX = width / tileSize;
+        var nTilesY = height / tileSize;
+
+        var freqParams = new FrequencyParams { TileSize = tileSize };
+        using var pb = new VulkanBuffer(_ctx, (ulong)Marshal.SizeOf<FrequencyParams>(), BufferUsageFlags.UniformBufferBit, MemoryPropertyFlags.HostVisibleBit);
+        pb.SetData([freqParams]);
+
+        var cmd = _ctx.BeginSingleTimeCommands();
+
+        input.TransitionLayout(ImageLayout.General, cmd);
+        output.TransitionLayout(ImageLayout.General, cmd);
+
+        // Create dummy images for unused descriptor bindings
+        using var dummyTex = new VulkanImage(_ctx, 1, 1, Format.R32G32B32A32Sfloat,
+            ImageUsageFlags.SampledBit | ImageUsageFlags.StorageBit);
+        dummyTex.TransitionLayout(ImageLayout.General, cmd);
+
+        var set = _descriptors.Allocate(_frequencyLayout);
+        _descriptors.UpdateBuffer(set, ShaderBindings.FrequencyDomain.Params, pb.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
+        _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.RefTexture, input.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.AlignedTexture, dummyTex.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.RmsTexture, dummyTex.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.MismatchTexture, dummyTex.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.HighlightsTexture, dummyTex.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.OutputTexture, output.View, ImageLayout.General, DescriptorType.StorageImage);
+
+        _kernelForwardFft!.BindPipeline(cmd);
+        _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _kernelForwardFft.PipelineLayout, 0, 1, &set, 0, null);
+        _kernelForwardFft.Dispatch(cmd, (uint)nTilesX, (uint)nTilesY, 1);
+
+        // Add memory barrier
+        var imageBarrier = new ImageMemoryBarrier
         {
-            EnsureKernels();
-
-            var nTilesX = width / tileSize;
-            var nTilesY = height / tileSize;
-
-            Console.WriteLine($"║ [2/9] Configuration:");
-            Console.WriteLine($"║       Input texture:  {input.Width}x{input.Height} (format: {input.Format})");
-            Console.WriteLine($"║       Output texture: {output.Width}x{output.Height} (format: {output.Format})");
-            Console.WriteLine($"║       TileSize: {tileSize}");
-            Console.WriteLine($"║       Spatial dimensions: {width}x{height}");
-            Console.WriteLine($"║       Tile grid: {nTilesX}x{nTilesY} tiles");
-
-            var freqParams = new FrequencyParams { TileSize = tileSize };
-            using var pb = new VulkanBuffer(_ctx, (ulong)Marshal.SizeOf<FrequencyParams>(), BufferUsageFlags.UniformBufferBit, MemoryPropertyFlags.HostVisibleBit);
-            pb.SetData([freqParams]);
-
-            var cmd = _ctx.BeginSingleTimeCommands();
-
-            input.TransitionLayout(ImageLayout.General, cmd);
-            output.TransitionLayout(ImageLayout.General, cmd);
-
-            // Create dummy images for unused descriptor bindings
-            using var dummyTex = new VulkanImage(_ctx, 1, 1, Format.R32G32B32A32Sfloat,
-                ImageUsageFlags.SampledBit | ImageUsageFlags.StorageBit);
-            dummyTex.TransitionLayout(ImageLayout.General, cmd);
-
-            var set = _descriptors.Allocate(_frequencyLayout);
-            _descriptors.UpdateBuffer(set, ShaderBindings.FrequencyDomain.Params, pb.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
-            _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.RefTexture, input.View, ImageLayout.General, DescriptorType.SampledImage);
-            _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.AlignedTexture, dummyTex.View, ImageLayout.General, DescriptorType.SampledImage);
-            _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.RmsTexture, dummyTex.View, ImageLayout.General, DescriptorType.SampledImage);
-            _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.MismatchTexture, dummyTex.View, ImageLayout.General, DescriptorType.SampledImage);
-            _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.HighlightsTexture, dummyTex.View, ImageLayout.General, DescriptorType.SampledImage);
-            _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.OutputTexture, output.View, ImageLayout.General, DescriptorType.StorageImage);
-
-            _kernelForwardFft!.BindPipeline(cmd);
-            _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _kernelForwardFft.PipelineLayout, 0, 1, &set, 0, null);
-            _kernelForwardFft.Dispatch(cmd, (uint)nTilesX, (uint)nTilesY, 1);
-
-            // Add memory barrier
-            var imageBarrier = new ImageMemoryBarrier
+            SType = StructureType.ImageMemoryBarrier,
+            OldLayout = ImageLayout.General,
+            NewLayout = ImageLayout.General,
+            SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
+            Image = output.Handle,
+            SubresourceRange = new ImageSubresourceRange
             {
-                SType = StructureType.ImageMemoryBarrier,
-                OldLayout = ImageLayout.General,
-                NewLayout = ImageLayout.General,
-                SrcQueueFamilyIndex = Vk.QueueFamilyIgnored,
-                DstQueueFamilyIndex = Vk.QueueFamilyIgnored,
-                Image = output.Handle,
-                SubresourceRange = new ImageSubresourceRange
-                {
-                    AspectMask = ImageAspectFlags.ColorBit,
-                    BaseMipLevel = 0,
-                    LevelCount = 1,
-                    BaseArrayLayer = 0,
-                    LayerCount = 1
-                },
-                SrcAccessMask = AccessFlags.ShaderWriteBit,
-                DstAccessMask = AccessFlags.ShaderReadBit | AccessFlags.TransferReadBit | AccessFlags.MemoryReadBit
-            };
-            _ctx.Vk.CmdPipelineBarrier(cmd,
-                PipelineStageFlags.ComputeShaderBit,
-                PipelineStageFlags.ComputeShaderBit | PipelineStageFlags.TransferBit | PipelineStageFlags.HostBit,
-                0, 0, null, 0, null, 1, &imageBarrier);
+                AspectMask = ImageAspectFlags.ColorBit,
+                BaseMipLevel = 0,
+                LevelCount = 1,
+                BaseArrayLayer = 0,
+                LayerCount = 1
+            },
+            SrcAccessMask = AccessFlags.ShaderWriteBit,
+            DstAccessMask = AccessFlags.ShaderReadBit | AccessFlags.TransferReadBit | AccessFlags.MemoryReadBit
+        };
+        _ctx.Vk.CmdPipelineBarrier(cmd,
+            PipelineStageFlags.ComputeShaderBit,
+            PipelineStageFlags.ComputeShaderBit | PipelineStageFlags.TransferBit | PipelineStageFlags.HostBit,
+            0, 0, null, 0, null, 1, &imageBarrier);
 
-            _ctx.EndSingleTimeCommands(cmd);
-            Console.WriteLine($"║ [FFT DEBUG] ExecuteForwardFft EXIT - SUCCESS");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"║ EXCEPTION in ExecuteForwardFft: {ex.GetType().Name}: {ex.Message}");
-            throw;
-        }
+        _ctx.EndSingleTimeCommands(cmd);
     }
 
     /// <summary>
@@ -400,9 +353,6 @@ public unsafe class FrequencyMergePipeline
         var height = (int)outputSpatial.Height;
         var nTilesX = width / tileSize;
         var nTilesY = height / tileSize;
-
-        Console.WriteLine($"[ExecuteBackwardFft] InputFT: {inputFt.Width}x{inputFt.Height}, Output: {width}x{height}");
-        Console.WriteLine($"[ExecuteBackwardFft] TileSize={tileSize}, NumTextures={numTextures}, Tiles={nTilesX}x{nTilesY}");
 
         var freqParams = new FrequencyParams
         {
@@ -427,7 +377,6 @@ public unsafe class FrequencyMergePipeline
         _kernelBackwardFft!.BindPipeline(cmd);
         _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _kernelBackwardFft.PipelineLayout, 0, 1, &set, 0, null);
 
-        Console.WriteLine($"[ExecuteBackwardFft] Dispatching {nTilesX}x{nTilesY} threads");
         _kernelBackwardFft.Dispatch(cmd, (uint)nTilesX, (uint)nTilesY, 1);
         _ctx.EndSingleTimeCommands(cmd);
     }
@@ -456,7 +405,6 @@ public unsafe class FrequencyMergePipeline
         _kernelRms!.BindPipeline(cmd);
         _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _kernelRms.PipelineLayout, 0, 1, &set, 0, null);
 
-        Console.WriteLine($"[ExecuteCalculateRms] Input: {rgbaInput.Width}x{rgbaInput.Height}, Output: {rmsOutput.Width}x{rmsOutput.Height}, Dispatch: {nTilesX}x{nTilesY}");
         _kernelRms.Dispatch(cmd, (uint)nTilesX, (uint)nTilesY, 1);
 
         _ctx.EndSingleTimeCommands(cmd);

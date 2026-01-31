@@ -715,18 +715,49 @@ void sum_row_to_buffer(uint3 DTid : SV_DispatchThreadID)
     // DTid.x = mosaic column index (0 to MosaicPatternWidth-1)
     // DTid.y = mosaic row index
     // We sum all values at row DTid.y where (x % MosaicPatternWidth) == DTid.x
-    
+
     uint inWidth, inHeight;
     InTextureFloat.GetDimensions(inWidth, inHeight);
-    
+
     float total = 0.0f;
     for (uint x = DTid.x; x < inWidth; x += MosaicPatternWidth)
     {
         total += InTextureFloat.Load(int3(x, DTid.y, 0));
     }
-    
+
     // Write to a single output pixel (which will be read back to CPU)
     // Store at (DTid.x, DTid.y) position in output
     OutTextureFloat[DTid.xy] = total;
+}
+
+// -------------------------------------------------------------------------
+// GPU-side Accumulator Blit
+// -------------------------------------------------------------------------
+// Copies a cropped region from source texture and adds it to accumulator.
+// This replaces the CPU-based accumulation loop, eliminating GPU round-trips.
+//
+// Dispatch: (croppedWidth, croppedHeight, 1) threads
+// Params used: OffsetX, OffsetY (source crop offset), PadLeft, PadTop (dest offset), InputWidth (source stride)
+
+[numthreads(16, 16, 1)]
+void accumulate_cropped_region(uint3 DTid : SV_DispatchThreadID)
+{
+    // DTid.xy is the position within the cropped region (0 to croppedWidth-1, 0 to croppedHeight-1)
+    uint2 croppedPos = DTid.xy;
+
+    // Calculate source position (in source texture with crop offset)
+    // OffsetX, OffsetY = cropLeft, cropTop from the source
+    uint2 srcPos = uint2(croppedPos.x + OffsetX, croppedPos.y + OffsetY);
+
+    // Calculate destination position (in accumulator with padding offset)
+    // PadLeft, PadTop = destination padding offset
+    uint2 dstPos = uint2(croppedPos.x + PadLeft, croppedPos.y + PadTop);
+
+    // Read from source (InTextureFloat bound to source Bayer texture)
+    float srcVal = InTextureFloat.Load(int3(srcPos, 0));
+
+    // Read current accumulator value and add
+    float accVal = OutTextureFloat[dstPos];
+    OutTextureFloat[dstPos] = accVal + srcVal;
 }
 

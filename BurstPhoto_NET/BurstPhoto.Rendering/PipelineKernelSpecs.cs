@@ -234,6 +234,12 @@ public static class PipelineKernelSpecs
         "sum_row_to_buffer"
     );
 
+    public static KernelSpec AccumulateCroppedRegion => new(
+        "accumulate_cropped_region",
+        Path.Combine(ShadersDir, "TextureOps.hlsl"),
+        "accumulate_cropped_region"
+    );
+
     // Frequency Domain Pipeline (modular shaders)
     public static KernelSpec AbsDiff => new(
         "calculate_abs_diff_rgba",
