@@ -1,4 +1,3 @@
-using System;
 using Silk.NET.Vulkan;
 
 namespace BurstPhoto.Rendering;
@@ -111,7 +110,7 @@ public unsafe class VulkanImage : IDisposable
     {
         if (CurrentLayout == newLayout) return;
 
-        bool singleTime = cmdBuffer == null;
+        var singleTime = cmdBuffer == null;
         var cmd = cmdBuffer ?? _ctx.BeginSingleTimeCommands();
 
         var barrier = new ImageMemoryBarrier
@@ -186,7 +185,7 @@ public unsafe class VulkanImage : IDisposable
     {
         _ctx.Vk.GetPhysicalDeviceMemoryProperties(_ctx.PhysicalDevice, out var memProperties);
 
-        for (int i = 0; i < memProperties.MemoryTypeCount; i++)
+        for (var i = 0; i < memProperties.MemoryTypeCount; i++)
         {
             if ((typeFilter & (1 << i)) != 0 && (memProperties.MemoryTypes[i].PropertyFlags & properties) == properties)
             {
@@ -199,7 +198,7 @@ public unsafe class VulkanImage : IDisposable
 
     public void SetData<T>(T[] data, CommandBuffer? cmdBuffer = null) where T : unmanaged
     {
-        ulong size = (ulong)(data.Length * sizeof(T));
+        var size = (ulong)(data.Length * sizeof(T));
         
         // create staging buffer
         using var stagingBuffer = new VulkanBuffer(_ctx, size, BufferUsageFlags.TransferSrcBit, 
@@ -209,7 +208,7 @@ public unsafe class VulkanImage : IDisposable
         
         TransitionLayout(ImageLayout.TransferDstOptimal, cmdBuffer);
         
-        bool singleTime = cmdBuffer == null;
+        var singleTime = cmdBuffer == null;
         var cmd = cmdBuffer ?? _ctx.BeginSingleTimeCommands();
         
         var region = new BufferImageCopy
@@ -265,15 +264,15 @@ public unsafe class VulkanImage : IDisposable
     public T[] GetData<T>(CommandBuffer? cmdBuffer = null, bool wait = true) where T : unmanaged
     {
         // Calculate ACTUAL image size in bytes based on format, not sizeof(T)
-        int bytesPerPixel = GetBytesPerPixel();
-        ulong imageSize = (ulong)(Width * Height * bytesPerPixel);
+        var bytesPerPixel = GetBytesPerPixel();
+        var imageSize = (ulong)(Width * Height * bytesPerPixel);
 
         using var stagingBuffer = new VulkanBuffer(_ctx, imageSize, BufferUsageFlags.TransferDstBit,
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
 
         TransitionLayout(ImageLayout.TransferSrcOptimal, cmdBuffer);
 
-        bool singleTime = cmdBuffer == null;
+        var singleTime = cmdBuffer == null;
         var cmd = cmdBuffer ?? _ctx.BeginSingleTimeCommands();
 
         var region = new BufferImageCopy
@@ -303,7 +302,7 @@ public unsafe class VulkanImage : IDisposable
         TransitionLayout(ImageLayout.General, cmdBuffer);
 
         // Return all data as T[] - the count is based on actual image data size
-        ulong count = imageSize / (ulong)sizeof(T);
+        var count = imageSize / (ulong)sizeof(T);
         return stagingBuffer.GetData<T>(count);
     }
 

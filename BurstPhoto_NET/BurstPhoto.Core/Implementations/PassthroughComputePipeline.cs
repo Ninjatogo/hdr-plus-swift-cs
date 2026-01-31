@@ -1,7 +1,5 @@
 using BurstPhoto.Core.Interfaces;
 using BurstPhoto.Core.Models;
-using System.Threading.Tasks;
-using System.Threading.Tasks;
 
 namespace BurstPhoto.Core.Implementations;
 

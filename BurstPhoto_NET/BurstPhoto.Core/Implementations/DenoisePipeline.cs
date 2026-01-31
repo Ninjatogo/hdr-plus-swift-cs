@@ -54,12 +54,12 @@ public class DenoisePipeline : IDenoisePipeline
         var (uniformExposure, exposureBias, isoExposureTime) = AnalyzeExposure(images);
 
         // Select reference frame
-        int refIdx = SelectReferenceFrame(images, uniformExposure, exposureBias, isoExposureTime);
+        var refIdx = SelectReferenceFrame(images, uniformExposure, exposureBias, isoExposureTime);
         var refImage = images[refIdx];
         Console.WriteLine($"Selected reference frame: {refIdx} ({Path.GetFileName(refImage.SourcePath)})");
 
         // Handle non-Bayer sensor constraints
-        int mosaicPatternWidth = refImage.MosaicPatternWidth;
+        var mosaicPatternWidth = refImage.MosaicPatternWidth;
         var effectiveOptions = ApplySensorConstraints(options, mosaicPatternWidth, uniformExposure, progress);
 
         // Check for non-Bayer exposure bracketing
@@ -69,13 +69,13 @@ public class DenoisePipeline : IDenoisePipeline
         }
 
         // Calculate tile info
-        int tileSize = ProcessingOptions.GetTileSizePixels(effectiveOptions.TileSize);
-        int searchDist = ProcessingOptions.GetSearchDistancePixels(effectiveOptions.SearchDistance);
+        var tileSize = ProcessingOptions.GetTileSizePixels(effectiveOptions.TileSize);
+        var searchDist = ProcessingOptions.GetSearchDistancePixels(effectiveOptions.SearchDistance);
         var tileInfo = TileInfo.Calculate(refImage.Width, refImage.Height, tileSize, searchDist);
         Console.WriteLine($"Tile grid: {tileInfo.NTilesX}x{tileInfo.NTilesY}, search positions: {tileInfo.NPos2D}");
 
         // Check cache
-        string settingsHash = GenerateSettingsHash(imagePaths, effectiveOptions);
+        var settingsHash = GenerateSettingsHash(imagePaths, effectiveOptions);
         RawImage result;
 
         if (_lastResult != null && _lastSettingsHash == settingsHash)
@@ -103,12 +103,12 @@ public class DenoisePipeline : IDenoisePipeline
         }
 
         // Generate output filename
-        string outputPath = GenerateOutputPath(refImage.SourcePath, outputDirectory, effectiveOptions, images.Count);
+        var outputPath = GenerateOutputPath(refImage.SourcePath, outputDirectory, effectiveOptions, images.Count);
 
         // Write output
         Console.WriteLine($"Writing output to: {outputPath}");
         if (result == null) throw new InvalidOperationException("Compute pipeline result is null!");
-        Console.WriteLine($"Result image: {result.Width}x{result.Height}, Data len: {result.Data?.Length}");
+        Console.WriteLine($"Result image: {result.Width}x{result.Height}, Data len: {result.Data.Length}");
         
         await _writer.WriteAsync(result, outputPath);
         progress.ProgressInt += 10_000_000;
@@ -129,7 +129,7 @@ public class DenoisePipeline : IDenoisePipeline
         }
 
         // Check that all images have the same extension
-        string firstExtension = Path.GetExtension(imagePaths[0]).ToLowerInvariant();
+        var firstExtension = Path.GetExtension(imagePaths[0]).ToLowerInvariant();
         foreach (var path in imagePaths)
         {
             if (!Path.GetExtension(path).Equals(firstExtension, StringComparison.OrdinalIgnoreCase))
@@ -144,10 +144,10 @@ public class DenoisePipeline : IDenoisePipeline
     /// </summary>
     private void ValidateResolutions(IReadOnlyList<RawImage> images)
     {
-        int width = images[0].Width;
-        int height = images[0].Height;
+        var width = images[0].Width;
+        var height = images[0].Height;
 
-        for (int i = 1; i < images.Count; i++)
+        for (var i = 1; i < images.Count; i++)
         {
             if (images[i].Width != width || images[i].Height != height)
             {
@@ -200,7 +200,7 @@ public class DenoisePipeline : IDenoisePipeline
         var isoExposureTime = images.Select(img => (double)img.IsoExposureTime).ToArray();
 
         // Check if exposure bias is uniform
-        bool uniformExposure = exposureBias.All(e => e == exposureBias[0]);
+        var uniformExposure = exposureBias.All(e => e == exposureBias[0]);
 
         if (uniformExposure)
         {
@@ -212,8 +212,8 @@ public class DenoisePipeline : IDenoisePipeline
             {
                 // Non-uniform via manual ISO/exposure changes
                 // Recalculate exposure bias relative to darkest frame
-                int refIdx = Array.IndexOf(isoExposureTime, isoExposureTime.Min());
-                for (int i = 0; i < images.Count; i++)
+                var refIdx = Array.IndexOf(isoExposureTime, isoExposureTime.Min());
+                for (var i = 0; i < images.Count; i++)
                 {
                     exposureBias[i] = (int)Math.Round(
                         (Math.Log2(isoExposureTime[i] / isoExposureTime[refIdx]) - 2.0) * 100);
@@ -237,14 +237,14 @@ public class DenoisePipeline : IDenoisePipeline
         {
             // Use image with median exposure value
             var sortedExposures = exposureBias.OrderBy(x => x).ToArray();
-            int medianExposure = sortedExposures[sortedExposures.Length / 2];
+            var medianExposure = sortedExposures[sortedExposures.Length / 2];
             return Array.IndexOf(exposureBias, medianExposure);
         }
         else
         {
             // Check if ISO*exposureTime was non-uniform
             const double epsilon = 1e-12;
-            bool isoUniform = isoExposureTime.All(t => Math.Abs(t - isoExposureTime[0]) <= epsilon);
+            var isoUniform = isoExposureTime.All(t => Math.Abs(t - isoExposureTime[0]) <= epsilon);
 
             if (isoUniform)
             {
@@ -256,7 +256,7 @@ public class DenoisePipeline : IDenoisePipeline
             {
                 // ISO/exposure varied manually - pick median
                 var sortedIso = isoExposureTime.OrderBy(x => x).ToArray();
-                double medianIso = sortedIso[sortedIso.Length / 2];
+                var medianIso = sortedIso[sortedIso.Length / 2];
                 return Array.IndexOf(isoExposureTime, medianIso);
             }
         }
@@ -306,8 +306,7 @@ public class DenoisePipeline : IDenoisePipeline
         }
 
         // 16-bit output requires exposure control
-        if (result.OutputBitDepth == OutputBitDepthOption.Bit16 && 
-            result.ExposureControl == ExposureControlOption.Off)
+        if (result is { OutputBitDepth: OutputBitDepthOption.Bit16, ExposureControl: ExposureControlOption.Off })
         {
             progress.ShowExposureBitDepthAlert = true;
             result.OutputBitDepth = OutputBitDepthOption.Native;
@@ -337,13 +336,13 @@ public class DenoisePipeline : IDenoisePipeline
     /// </summary>
     private string GenerateOutputPath(string refPath, string outputDirectory, ProcessingOptions options, int frameCount)
     {
-        string baseName = Path.GetFileNameWithoutExtension(refPath);
+        var baseName = Path.GetFileNameWithoutExtension(refPath);
 
         // Merging suffix
-        string mergingSuffix = options.Merging == MergingAlgorithm.HigherQuality ? "q" : "f";
-        int noiseInt = (int)(options.NoiseReduction + 0.5);
+        var mergingSuffix = options.Merging == MergingAlgorithm.HigherQuality ? "q" : "f";
+        var noiseInt = (int)(options.NoiseReduction + 0.5);
 
-        string suffix = $"_n{frameCount}";
+        var suffix = $"_n{frameCount}";
 
         if (Math.Abs(options.NoiseReduction - 23.0) < 0.1)
         {
@@ -357,7 +356,7 @@ public class DenoisePipeline : IDenoisePipeline
         // Exposure control suffix
         suffix += ProcessingOptions.GetExposureControlSuffix(options.ExposureControl);
 
-        string outputName = baseName + suffix + ".dng";
+        var outputName = baseName + suffix + ".dng";
         return Path.Combine(outputDirectory, outputName);
     }
 }

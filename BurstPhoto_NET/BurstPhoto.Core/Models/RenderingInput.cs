@@ -1,5 +1,3 @@
-using System.Collections.Generic;
-
 namespace BurstPhoto.Core.Models;
 
 /// <summary>

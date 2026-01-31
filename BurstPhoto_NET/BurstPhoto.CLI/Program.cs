@@ -6,11 +6,6 @@ using BurstPhoto.Core.Interfaces;
 using BurstPhoto.Core.Implementations;
 using BurstPhoto.Rendering;
 using BurstPhoto.Rendering.Implementations;
-using System;
-using System.IO;
-using System.Reflection;
-using System.Threading;
-using System.Threading.Tasks;
 using Sdcb.LibRaw; // For Debug Command
 
 namespace BurstPhoto.CLI;
@@ -32,8 +27,8 @@ public class Program
             {
                 // Check for GPU preference from environment variable
                 int? gpuIndex = null;
-                string? gpuEnv = Environment.GetEnvironmentVariable("BURSTPHOTO_GPU");
-                if (!string.IsNullOrEmpty(gpuEnv) && int.TryParse(gpuEnv, out int envGpuIndex))
+                var gpuEnv = Environment.GetEnvironmentVariable("BURSTPHOTO_GPU");
+                if (!string.IsNullOrEmpty(gpuEnv) && int.TryParse(gpuEnv, out var envGpuIndex))
                 {
                     gpuIndex = envGpuIndex;
                     Console.WriteLine($"[INFO] Using GPU index {gpuIndex} from BURSTPHOTO_GPU environment variable");
@@ -107,7 +102,7 @@ public class DebugLibRawCommand : AsyncCommand<DebugLibRawSettings>
             Console.WriteLine($"CameraMultiplier: [{ctx.CameraMultipler[0]}, {ctx.CameraMultipler[1]}, {ctx.CameraMultipler[2]}, {ctx.CameraMultipler[3]}]");
             
             // Calculated IsoExposureTime
-            float isoExposureTime = other.IsoSpeed * other.Shutter;
+            var isoExposureTime = other.IsoSpeed * other.Shutter;
             Console.WriteLine($"\nCalculated IsoExposureTime (ISO * Shutter): {isoExposureTime}");
         }
         else if (!string.IsNullOrEmpty(settings.FilePath))

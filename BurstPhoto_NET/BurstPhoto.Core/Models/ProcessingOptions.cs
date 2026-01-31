@@ -44,9 +44,9 @@ public enum ExposureControlOption
 {
     Off,
     LinearFullRange,
-    Linear1EV,
-    Curve0EV,
-    Curve1EV
+    Linear1Ev,
+    Curve0Ev,
+    Curve1Ev
 }
 
 /// <summary>
@@ -75,19 +75,19 @@ public class ProcessingOptions
     /// <summary>
     /// Enable debug output: saves intermediate DNGs to DebugOutput folder.
     /// </summary>
-    public bool EnableDebugDump { get; set; } = false;
+    public bool EnableDebugDump { get; set; }
     
     /// <summary>
     /// Enable FFT validation: runs mathematical tests (Parseval's theorem, round-trip, DC component)
     /// to verify each FFT pipeline stage is working correctly. Stops early if validation fails.
     /// </summary>
-    public bool EnableFftValidation { get; set; } = false;
+    public bool EnableFftValidation { get; set; }
 
     /// <summary>
     /// Debug option: Skip the reduce_artifacts_tile_border pass to test if it's causing the 8x8 grid pattern.
     /// When true, the tile boundary blending is disabled.
     /// </summary>
-    public bool SkipReduceArtifacts { get; set; } = false;
+    public bool SkipReduceArtifacts { get; set; }
 
     /// <summary>
     /// Gets the tile size in pixels for the given option.
@@ -118,9 +118,9 @@ public class ProcessingOptions
     {
         ExposureControlOption.Off => "",
         ExposureControlOption.LinearFullRange => "_l0",
-        ExposureControlOption.Linear1EV => "_l1",
-        ExposureControlOption.Curve0EV => "_nl0",
-        ExposureControlOption.Curve1EV => "_nl1",
+        ExposureControlOption.Linear1Ev => "_l1",
+        ExposureControlOption.Curve0Ev => "_nl0",
+        ExposureControlOption.Curve1Ev => "_nl1",
         _ => ""
     };
 }

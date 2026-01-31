@@ -1,4 +1,3 @@
-using System;
 using Silk.NET.Shaderc;
 
 namespace BurstPhoto.Rendering;
@@ -35,18 +34,18 @@ public unsafe class VulkanShaderCompiler : IDisposable
             if (trimmed.StartsWith("#include"))
             {
                 // Extract the include file name
-                int firstQuote = trimmed.IndexOf('"');
-                int lastQuote = trimmed.LastIndexOf('"');
+                var firstQuote = trimmed.IndexOf('"');
+                var lastQuote = trimmed.LastIndexOf('"');
                 if (firstQuote != -1 && lastQuote != -1 && firstQuote < lastQuote)
                 {
-                    string includeFile = trimmed.Substring(firstQuote + 1, lastQuote - firstQuote - 1);
-                    string includePath = System.IO.Path.Combine(baseDirectory, includeFile);
+                    var includeFile = trimmed.Substring(firstQuote + 1, lastQuote - firstQuote - 1);
+                    var includePath = Path.Combine(baseDirectory, includeFile);
 
-                    if (System.IO.File.Exists(includePath))
+                    if (File.Exists(includePath))
                     {
-                        string includeContent = System.IO.File.ReadAllText(includePath);
+                        var includeContent = File.ReadAllText(includePath);
                         // Recursively resolve includes in the included file
-                        string includeDir = System.IO.Path.GetDirectoryName(includePath);
+                        var includeDir = Path.GetDirectoryName(includePath);
                         includeContent = ResolveIncludes(includeContent, includeDir);
                         result.AppendLine($"// BEGIN INCLUDE: {includeFile}");
                         result.AppendLine(includeContent);
@@ -89,10 +88,10 @@ public unsafe class VulkanShaderCompiler : IDisposable
             _shaderc.ResultRelease(result);
 
             // Save failing shader source for debugging
-            string debugPath = $"FailedShader_{name}_{DateTime.Now:yyyyMMdd_HHmmss}.hlsl";
+            var debugPath = $"FailedShader_{name}_{DateTime.Now:yyyyMMdd_HHmmss}.hlsl";
             try
             {
-                System.IO.File.WriteAllText(debugPath, source);
+                File.WriteAllText(debugPath, source);
                 Console.WriteLine($"[SHADER ERROR] Failed shader source saved to: {debugPath}");
                 Console.WriteLine($"[SHADER ERROR] Source length: {source.Length} characters, {source.Split('\n').Length} lines");
             }
@@ -117,14 +116,14 @@ public unsafe class VulkanShaderCompiler : IDisposable
     /// </summary>
     public byte[] CompileFile(string filePath, string entryPoint = "CSMain")
     {
-        if (!System.IO.File.Exists(filePath))
+        if (!File.Exists(filePath))
         {
-            throw new System.IO.FileNotFoundException($"Shader file not found: {filePath}");
+            throw new FileNotFoundException($"Shader file not found: {filePath}");
         }
 
-        string source = System.IO.File.ReadAllText(filePath);
-        string directory = System.IO.Path.GetDirectoryName(filePath);
-        string name = System.IO.Path.GetFileNameWithoutExtension(filePath);
+        var source = File.ReadAllText(filePath);
+        var directory = Path.GetDirectoryName(filePath);
+        var name = Path.GetFileNameWithoutExtension(filePath);
 
         // Resolve all includes
         source = ResolveIncludes(source, directory);

@@ -15,55 +15,55 @@ public static class ShaderBindings
     // ============================================================
 
     /// <summary>Binding 0: Parameter buffer used by most shaders</summary>
-    public const int UniformBuffer_Params = 0;
+    public const int UniformBufferParams = 0;
 
     // ============================================================
     // SAMPLED IMAGES (Read-Only Textures) - Standard Layout
     // ============================================================
 
     /// <summary>Binding 1: Primary input texture (read-only)</summary>
-    public const int SampledImage_Input = 1;
+    public const int SampledImageInput = 1;
 
     /// <summary>Binding 2: Secondary input texture (comparison/aligned image)</summary>
-    public const int SampledImage_Comparison = 2;
+    public const int SampledImageComparison = 2;
 
     /// <summary>Binding 3: Alignment/motion vector texture or third input</summary>
-    public const int SampledImage_Alignment = 3;
+    public const int SampledImageAlignment = 3;
 
     /// <summary>Binding 4: Auxiliary texture 0 (context-dependent)</summary>
-    public const int SampledImage_Aux0 = 4;
+    public const int SampledImageAux0 = 4;
 
     /// <summary>Binding 5: Auxiliary texture 1 (context-dependent)</summary>
-    public const int SampledImage_Aux1 = 5;
+    public const int SampledImageAux1 = 5;
 
     /// <summary>Binding 6: Auxiliary texture 2 (weight/mask texture)</summary>
-    public const int SampledImage_Aux2 = 6;
+    public const int SampledImageAux2 = 6;
 
     // ============================================================
     // STORAGE IMAGES (Read-Write Textures)
     // ============================================================
 
     /// <summary>Binding 10: Primary output texture (write-only or read-write)</summary>
-    public const int StorageImage_Output = 10;
+    public const int StorageImageOutput = 10;
 
     /// <summary>Binding 11: Secondary output texture (for multi-output shaders)</summary>
-    public const int StorageImage_Output2 = 11;
+    public const int StorageImageOutput2 = 11;
 
     /// <summary>Binding 12: Third output texture (RGBA output for conversion)</summary>
-    public const int StorageImage_Output3 = 12;
+    public const int StorageImageOutput3 = 12;
 
     /// <summary>Binding 13: Weight accumulator output</summary>
-    public const int StorageImage_WeightAccum = 13;
+    public const int StorageImageWeightAccum = 13;
 
     // ============================================================
     // STORAGE BUFFERS
     // ============================================================
 
     /// <summary>Binding 5: Mean texture buffer (for prepare pipeline)</summary>
-    public const int StorageBuffer_Mean = 5;
+    public const int StorageBufferMean = 5;
 
     /// <summary>Binding 6: Black levels buffer (for prepare pipeline)</summary>
-    public const int StorageBuffer_BlackLevels = 6;
+    public const int StorageBufferBlackLevels = 6;
 
     // ============================================================
     // FREQUENCY DOMAIN PIPELINE SPECIFIC
@@ -82,13 +82,13 @@ public static class ShaderBindings
     /// </summary>
     public static class FrequencyDomain
     {
-        public const int Params = UniformBuffer_Params;
-        public const int RefTexture = SampledImage_Input;           // Binding 1
-        public const int AlignedTexture = SampledImage_Comparison;  // Binding 2
-        public const int RmsTexture = SampledImage_Alignment;       // Binding 3 (AuxTexture0)
-        public const int MismatchTexture = SampledImage_Aux0;       // Binding 4 (AuxTexture1)
-        public const int HighlightsTexture = SampledImage_Aux1;     // Binding 5 (AuxTexture2)
-        public const int OutputTexture = StorageImage_Output;       // Binding 10
+        public const int Params = UniformBufferParams;
+        public const int RefTexture = SampledImageInput;           // Binding 1
+        public const int AlignedTexture = SampledImageComparison;  // Binding 2
+        public const int RmsTexture = SampledImageAlignment;       // Binding 3 (AuxTexture0)
+        public const int MismatchTexture = SampledImageAux0;       // Binding 4 (AuxTexture1)
+        public const int HighlightsTexture = SampledImageAux1;     // Binding 5 (AuxTexture2)
+        public const int OutputTexture = StorageImageOutput;       // Binding 10
     }
 
     // ============================================================
@@ -113,12 +113,12 @@ public static class ShaderBindings
     /// </summary>
     public static class Alignment
     {
-        public const int Params = UniformBuffer_Params;
-        public const int RefTexture = SampledImage_Input;           // Binding 1
-        public const int InTexture = SampledImage_Input;            // Binding 1 (alias for warp)
-        public const int CompTexture = SampledImage_Comparison;     // Binding 2
-        public const int AlignmentVectors = SampledImage_Alignment; // Binding 3
-        public const int Output = StorageImage_Output;              // Binding 10
+        public const int Params = UniformBufferParams;
+        public const int RefTexture = SampledImageInput;           // Binding 1
+        public const int InTexture = SampledImageInput;            // Binding 1 (alias for warp)
+        public const int CompTexture = SampledImageComparison;     // Binding 2
+        public const int AlignmentVectors = SampledImageAlignment; // Binding 3
+        public const int Output = StorageImageOutput;              // Binding 10
     }
 
     // ============================================================
@@ -139,20 +139,20 @@ public static class ShaderBindings
     /// </summary>
     public static class Conversion
     {
-        public const int Params = UniformBuffer_Params;
+        public const int Params = UniformBufferParams;
 
         // For convert_to_rgba: Bayer(float) → RGBA
-        public const int BayerInput = SampledImage_Input;           // Binding 1 (InTextureFloat)
-        public const int RgbaOutput = StorageImage_Output3;         // Binding 12 (OutTextureRGBA)
+        public const int BayerInput = SampledImageInput;           // Binding 1 (InTextureFloat)
+        public const int RgbaOutput = StorageImageOutput3;         // Binding 12 (OutTextureRGBA)
 
         // For convert_to_bayer: RGBA → Bayer(float)
-        public const int RgbaInput = SampledImage_Alignment;        // Binding 3 (InTextureRGBA)
-        public const int BayerOutput = StorageImage_Output;         // Binding 10 (OutTextureFloat)
+        public const int RgbaInput = SampledImageAlignment;        // Binding 3 (InTextureRGBA)
+        public const int BayerOutput = StorageImageOutput;         // Binding 10 (OutTextureFloat)
 
         // Dummy bindings (unused but required for layout compatibility)
-        public const int UnusedSampled = SampledImage_Alignment;    // Binding 3
-        public const int UnusedStorage = StorageImage_Output;       // Binding 10
-        public const int UnusedStorage2 = StorageImage_Output3;     // Binding 12
+        public const int UnusedSampled = SampledImageAlignment;    // Binding 3
+        public const int UnusedStorage = StorageImageOutput;       // Binding 10
+        public const int UnusedStorage2 = StorageImageOutput3;     // Binding 12
     }
 
     // ============================================================
@@ -175,16 +175,16 @@ public static class ShaderBindings
     /// </summary>
     public static class Prepare
     {
-        public const int Params = UniformBuffer_Params;
-        public const int UnusedFloat = SampledImage_Input;          // Binding 1
-        public const int InputUint = SampledImage_Comparison;       // Binding 2 (InTextureUint)
-        public const int UnusedRgba = SampledImage_Alignment;       // Binding 3
-        public const int HotPixelWeight = SampledImage_Aux0;        // Binding 4 (AuxTextureFloat)
-        public const int MeanBuffer = StorageBuffer_Mean;           // Binding 5
-        public const int BlackLevelsBuffer = StorageBuffer_BlackLevels; // Binding 6
-        public const int OutputFloat = StorageImage_Output;         // Binding 10
-        public const int UnusedOutputUint = StorageImage_Output2;   // Binding 11
-        public const int UnusedOutputRgba = StorageImage_Output3;   // Binding 12
+        public const int Params = UniformBufferParams;
+        public const int UnusedFloat = SampledImageInput;          // Binding 1
+        public const int InputUint = SampledImageComparison;       // Binding 2 (InTextureUint)
+        public const int UnusedRgba = SampledImageAlignment;       // Binding 3
+        public const int HotPixelWeight = SampledImageAux0;        // Binding 4 (AuxTextureFloat)
+        public const int MeanBuffer = StorageBufferMean;           // Binding 5
+        public const int BlackLevelsBuffer = StorageBufferBlackLevels; // Binding 6
+        public const int OutputFloat = StorageImageOutput;         // Binding 10
+        public const int UnusedOutputUint = StorageImageOutput2;   // Binding 11
+        public const int UnusedOutputRgba = StorageImageOutput3;   // Binding 12
     }
 
     // ============================================================
@@ -204,12 +204,12 @@ public static class ShaderBindings
     /// </summary>
     public static class Exposure
     {
-        public const int Params = UniformBuffer_Params;
-        public const int InputTexture = SampledImage_Input;         // Binding 1 (InTexture)
-        public const int BlurredTexture = SampledImage_Comparison;  // Binding 2 (InBlurred)
-        public const int BlackLevelsBuffer = SampledImage_Alignment;// Binding 3 (storage buffer)
-        public const int MaxBuffer = SampledImage_Aux0;             // Binding 4 (storage buffer)
-        public const int OutputTexture = StorageImage_Output;       // Binding 10
-        public const int OutputBuffer = StorageImage_Output2;       // Binding 11
+        public const int Params = UniformBufferParams;
+        public const int InputTexture = SampledImageInput;         // Binding 1 (InTexture)
+        public const int BlurredTexture = SampledImageComparison;  // Binding 2 (InBlurred)
+        public const int BlackLevelsBuffer = SampledImageAlignment;// Binding 3 (storage buffer)
+        public const int MaxBuffer = SampledImageAux0;             // Binding 4 (storage buffer)
+        public const int OutputTexture = StorageImageOutput;       // Binding 10
+        public const int OutputBuffer = StorageImageOutput2;       // Binding 11
     }
 }

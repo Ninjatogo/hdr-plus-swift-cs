@@ -1,5 +1,4 @@
 using BurstPhoto.Core.Models;
-using Xunit;
 
 namespace BurstPhoto.Tests;
 

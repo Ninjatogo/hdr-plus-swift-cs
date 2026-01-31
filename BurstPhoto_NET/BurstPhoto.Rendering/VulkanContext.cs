@@ -1,7 +1,5 @@
 using Silk.NET.Core;
-using Silk.NET.Core.Native;
 using Silk.NET.Vulkan;
-using System;
 using System.Runtime.InteropServices;
 
 namespace BurstPhoto.Rendering;
@@ -43,8 +41,8 @@ public unsafe class VulkanContext : IDisposable
         };
 
         // Try to enable validation layers for debugging
-        string[] validationLayers = { "VK_LAYER_KHRONOS_validation" };
-        bool enableValidation = false;
+        string[] validationLayers = ["VK_LAYER_KHRONOS_validation"];
+        var enableValidation = false;
 
         // Check if validation layer is available
         uint layerCount = 0;
@@ -59,7 +57,7 @@ public unsafe class VulkanContext : IDisposable
 
             foreach (var layer in availableLayers)
             {
-                string layerName = System.Text.Encoding.UTF8.GetString((byte*)layer.LayerName, 256).TrimEnd('\0');
+                var layerName = System.Text.Encoding.UTF8.GetString(layer.LayerName, 256).TrimEnd('\0');
                 if (layerName == "VK_LAYER_KHRONOS_validation")
                 {
                     enableValidation = true;
@@ -70,7 +68,7 @@ public unsafe class VulkanContext : IDisposable
         }
 
         InstanceCreateInfo createInfo;
-        IntPtr layerNamePtr = IntPtr.Zero;
+        var layerNamePtr = IntPtr.Zero;
         byte** ppLayerNames = null;
 
         if (enableValidation)
@@ -129,11 +127,11 @@ public unsafe class VulkanContext : IDisposable
         Console.WriteLine($"\n=== Available Vulkan Devices ({deviceCount}) ===");
 
         // Display all available devices
-        for (int i = 0; i < deviceCount; i++)
+        for (var i = 0; i < deviceCount; i++)
         {
             Vk.GetPhysicalDeviceProperties(devices[i], out var props);
-            string deviceName = System.Text.Encoding.UTF8.GetString((byte*)props.DeviceName, 256).TrimEnd('\0');
-            string deviceType = props.DeviceType switch
+            var deviceName = System.Text.Encoding.UTF8.GetString(props.DeviceName, 256).TrimEnd('\0');
+            var deviceType = props.DeviceType switch
             {
                 PhysicalDeviceType.DiscreteGpu => "Discrete GPU",
                 PhysicalDeviceType.IntegratedGpu => "Integrated GPU",
@@ -164,7 +162,7 @@ public unsafe class VulkanContext : IDisposable
         {
             // Automatic selection: prefer discrete GPU, otherwise use first device
             selectedIndex = 0;
-            for (int i = 0; i < deviceCount; i++)
+            for (var i = 0; i < deviceCount; i++)
             {
                 Vk.GetPhysicalDeviceProperties(devices[i], out var props);
                 if (props.DeviceType == PhysicalDeviceType.DiscreteGpu)
@@ -180,7 +178,7 @@ public unsafe class VulkanContext : IDisposable
 
         // Display selected device info
         Vk.GetPhysicalDeviceProperties(PhysicalDevice, out var selectedProps);
-        string selectedName = System.Text.Encoding.UTF8.GetString((byte*)selectedProps.DeviceName, 256).TrimEnd('\0');
+        var selectedName = System.Text.Encoding.UTF8.GetString(selectedProps.DeviceName, 256).TrimEnd('\0');
         Console.WriteLine($"   Selected: {selectedName}\n");
     }
 
@@ -195,8 +193,8 @@ public unsafe class VulkanContext : IDisposable
             Vk.GetPhysicalDeviceQueueFamilyProperties(PhysicalDevice, &queueFamilyCount, pQueueFamilies);
         }
 
-        int i = 0;
-        bool found = false;
+        var i = 0;
+        var found = false;
         foreach (var queueFamily in queueFamilies)
         {
             if ((queueFamily.QueueFlags & QueueFlags.ComputeBit) != 0)
@@ -210,7 +208,7 @@ public unsafe class VulkanContext : IDisposable
 
         if (!found) throw new Exception("No compute queue family found");
 
-        float queuePriority = 1.0f;
+        var queuePriority = 1.0f;
         var queueCreateInfo = new DeviceQueueCreateInfo
         {
             SType = StructureType.DeviceQueueCreateInfo,
@@ -263,7 +261,7 @@ public unsafe class VulkanContext : IDisposable
         // Validate R32G32B32A32Sfloat format supports storage image operations
         // This is CRITICAL for RWTexture2D<float4> in frequency domain shaders
         Vk.GetPhysicalDeviceFormatProperties(PhysicalDevice, Format.R32G32B32A32Sfloat, out var formatProps);
-        bool supportsStorage = (formatProps.OptimalTilingFeatures & FormatFeatureFlags.StorageImageBit) != 0;
+        var supportsStorage = (formatProps.OptimalTilingFeatures & FormatFeatureFlags.StorageImageBit) != 0;
         Console.WriteLine($"R32G32B32A32Sfloat format properties:");
         Console.WriteLine($"  Optimal tiling features: {formatProps.OptimalTilingFeatures}");
         Console.WriteLine($"  Supports storage images: {(supportsStorage ? "YES" : "NO")}");

@@ -13,8 +13,8 @@ public class ValidationResult
     
     public override string ToString()
     {
-        string status = Passed ? "✓ PASS" : "✗ FAIL";
-        string result = $"[{StageName}] {TestName}: {status}";
+        var status = Passed ? "✓ PASS" : "✗ FAIL";
+        var result = $"[{StageName}] {TestName}: {status}";
         if (!Passed && !string.IsNullOrEmpty(FailureReason))
         {
             result += $"\n  Reason: {FailureReason}";
@@ -44,12 +44,12 @@ public static class FftValidator
     {
         double sum = 0;
         double sumSquares = 0;
-        double min = double.MaxValue;
-        double max = double.MinValue;
-        int count = data.Length;
-        int nonZeroCount = 0;
+        var min = double.MaxValue;
+        var max = double.MinValue;
+        var count = data.Length;
+        var nonZeroCount = 0;
         
-        for (int i = 0; i < count; i++)
+        for (var i = 0; i < count; i++)
         {
             double v = data[i];
             sum += v;
@@ -77,13 +77,13 @@ public static class FftValidator
     /// </summary>
     public static RgbaTextureStats ComputeRgbaStats(float[] rgbaData)
     {
-        int pixelCount = rgbaData.Length / 4;
+        var pixelCount = rgbaData.Length / 4;
         var r = new double[pixelCount];
         var g = new double[pixelCount];
         var b = new double[pixelCount];
         var a = new double[pixelCount];
         
-        for (int i = 0; i < pixelCount; i++)
+        for (var i = 0; i < pixelCount; i++)
         {
             r[i] = rgbaData[i * 4 + 0];
             g[i] = rgbaData[i * 4 + 1];
@@ -94,7 +94,7 @@ public static class FftValidator
         // Combined energy (sum of squares of all components)
         double totalEnergy = 0;
         double totalSum = 0;
-        for (int i = 0; i < pixelCount; i++)
+        for (var i = 0; i < pixelCount; i++)
         {
             totalEnergy += r[i] * r[i] + g[i] * g[i] + b[i] * b[i] + a[i] * a[i];
             totalSum += r[i] + g[i] + b[i] + a[i];
@@ -117,8 +117,8 @@ public static class FftValidator
     {
         // FT data is stored as 2*spatialWidth x height x 4 (RGBA, complex)
         // Each spatial position has Real at column 2*x, Imaginary at column 2*x+1
-        int ftWidth = spatialWidth * 2;
-        int pixelCount = spatialWidth * height;
+        var ftWidth = spatialWidth * 2;
+        var pixelCount = spatialWidth * height;
         
         double totalEnergy = 0;  // Sum of |X[k]|^2 = Re^2 + Im^2
         double dcSumReal = 0;    // Sum of DC bins (real parts at frequency 0,0 of each tile)
@@ -126,18 +126,18 @@ public static class FftValidator
         
         // For RGBA textures, we have 4 channels per pixel
         // FT stores: pixel[x] = (Re.r, Re.g, Re.b, Re.a) at even column, (Im.r, Im.g, Im.b, Im.a) at odd
-        int floatsPerRow = ftWidth * 4; // ftWidth pixels, 4 floats each
+        var floatsPerRow = ftWidth * 4; // ftWidth pixels, 4 floats each
         
-        for (int y = 0; y < height; y++)
+        for (var y = 0; y < height; y++)
         {
-            for (int x = 0; x < spatialWidth; x++)
+            for (var x = 0; x < spatialWidth; x++)
             {
-                int reIdx = (y * ftWidth + 2 * x) * 4;     // Real pixel (4 floats: RGBA)
-                int imIdx = (y * ftWidth + 2 * x + 1) * 4; // Imaginary pixel (4 floats: RGBA)
+                var reIdx = (y * ftWidth + 2 * x) * 4;     // Real pixel (4 floats: RGBA)
+                var imIdx = (y * ftWidth + 2 * x + 1) * 4; // Imaginary pixel (4 floats: RGBA)
                 
                 if (reIdx + 3 < ftData.Length && imIdx + 3 < ftData.Length)
                 {
-                    for (int c = 0; c < 4; c++)
+                    for (var c = 0; c < 4; c++)
                     {
                         double re = ftData[reIdx + c];
                         double im = ftData[imIdx + c];
@@ -165,12 +165,12 @@ public static class FftValidator
     {
         // Parseval: sum(|x[n]|^2) = sum(|X[k]|^2) / N
         // For 2D FFT: N = tileSize * tileSize
-        int N = tileSize * tileSize;
-        double expectedFreqEnergy = spatialEnergy * N;
+        var n = tileSize * tileSize;
+        var expectedFreqEnergy = spatialEnergy * n;
 
-        double ratio = frequencyEnergy / expectedFreqEnergy;
-        double diff = Math.Abs(ratio - 1.0);
-        bool passed = diff < DefaultTolerance;
+        var ratio = frequencyEnergy / expectedFreqEnergy;
+        var diff = Math.Abs(ratio - 1.0);
+        var passed = diff < DefaultTolerance;
 
         return new ValidationResult
         {
@@ -203,18 +203,18 @@ public static class FftValidator
         // Calculate Hann window energy reduction factor
         // For a 1D Hann window: integral of w(x)^2 over [0,N] ≈ 3N/8
         // For 2D: windowEnergyFactor = (3N/8) * (3N/8) / N^2 = 9/64 ≈ 0.140625
-        double windowEnergyFactor = 9.0 / 64.0; // Theoretical value for Hann window^2
+        var windowEnergyFactor = 9.0 / 64.0; // Theoretical value for Hann window^2
 
         // For 2D FFT: Parseval's theorem with window:
         // sum(|w[n]*x[n]|^2) = sum(|X[k]|^2) / N
         // We measured spatialEnergy BEFORE windowing, so we need to apply the window factor
-        double windowedSpatialEnergy = spatialEnergy * windowEnergyFactor;
-        int N = tileSize * tileSize;
-        double expectedFreqEnergy = windowedSpatialEnergy * N;
+        var windowedSpatialEnergy = spatialEnergy * windowEnergyFactor;
+        var n = tileSize * tileSize;
+        var expectedFreqEnergy = windowedSpatialEnergy * n;
 
-        double ratio = frequencyEnergy / expectedFreqEnergy;
-        double diff = Math.Abs(ratio - 1.0);
-        bool passed = diff < 0.10; // Allow 10% tolerance since window calculation is approximate
+        var ratio = frequencyEnergy / expectedFreqEnergy;
+        var diff = Math.Abs(ratio - 1.0);
+        var passed = diff < 0.10; // Allow 10% tolerance since window calculation is approximate
 
         return new ValidationResult
         {
@@ -261,10 +261,10 @@ public static class FftValidator
         
         double maxDiff = 0;
         double sumDiff = 0;
-        int pixelsWithinTolerance = 0;
-        double tolerance = range * DefaultTolerance;
+        var pixelsWithinTolerance = 0;
+        var tolerance = range * DefaultTolerance;
         
-        for (int i = 0; i < original.Length; i++)
+        for (var i = 0; i < original.Length; i++)
         {
             double diff = Math.Abs(original[i] - afterRoundTrip[i]);
             sumDiff += diff;
@@ -272,9 +272,9 @@ public static class FftValidator
             if (diff <= tolerance) pixelsWithinTolerance++;
         }
         
-        double percentWithinTolerance = 100.0 * pixelsWithinTolerance / original.Length;
-        double avgDiff = sumDiff / original.Length;
-        bool passed = percentWithinTolerance > 99.0 && maxDiff < tolerance * 10;
+        var percentWithinTolerance = 100.0 * pixelsWithinTolerance / original.Length;
+        var avgDiff = sumDiff / original.Length;
+        var passed = percentWithinTolerance > 99.0 && maxDiff < tolerance * 10;
         
         return new ValidationResult
         {
@@ -302,10 +302,10 @@ public static class FftValidator
         int normFactor,
         string stageName)
     {
-        double expectedMean = dcBinValue / normFactor;
-        double ratio = outputMean / expectedMean;
-        double diff = Math.Abs(ratio - 1.0);
-        bool passed = diff < DefaultTolerance;
+        var expectedMean = dcBinValue / normFactor;
+        var ratio = outputMean / expectedMean;
+        var diff = Math.Abs(ratio - 1.0);
+        var passed = diff < DefaultTolerance;
         
         return new ValidationResult
         {
@@ -331,13 +331,13 @@ public static class FftValidator
     {
         Console.WriteLine("\n=== FFT Pipeline Validation Results ===\n");
         
-        int testNum = 1;
-        bool anyFailed = false;
+        var testNum = 1;
+        var anyFailed = false;
         
         foreach (var result in results)
         {
-            string emoji = result.Passed ? "✓" : "✗";
-            string color = result.Passed ? "PASS" : "FAIL";
+            var emoji = result.Passed ? "✓" : "✗";
+            var color = result.Passed ? "PASS" : "FAIL";
             
             Console.WriteLine($"[{testNum}] {result.StageName}: {result.TestName}");
             Console.WriteLine($"    Result: {emoji} {color}");
@@ -409,16 +409,16 @@ public static class WindowDiagnostics
     {
         // Compute energy before FFT
         var originalStats = FftValidator.ComputeRgbaStats(originalData);
-        double inputEnergy = originalStats.TotalEnergy;
+        var inputEnergy = originalStats.TotalEnergy;
 
         // Compute energy after FFT
         var ftStats = FftValidator.ComputeFrequencyStats(ftData, width, height);
-        double outputEnergy = ftStats.TotalEnergy;
+        var outputEnergy = ftStats.TotalEnergy;
 
         // The ratio tells us the ACTUAL window factor
         // Expected for Hann window: ~0.140625 (9/64)
-        int N = tileSize * tileSize;
-        double actualWindowFactor = outputEnergy / (inputEnergy * N);
+        var n = tileSize * tileSize;
+        var actualWindowFactor = outputEnergy / (inputEnergy * n);
 
         return actualWindowFactor;
     }
@@ -431,10 +431,10 @@ public static class WindowDiagnostics
         int tileSize,
         string stageName)
     {
-        double theoreticalHannFactor = 9.0 / 64.0; // ~0.140625
-        double ratio = measuredFactor / theoreticalHannFactor;
-        double diff = Math.Abs(ratio - 1.0);
-        bool passed = diff < 0.10; // 10% tolerance
+        var theoreticalHannFactor = 9.0 / 64.0; // ~0.140625
+        var ratio = measuredFactor / theoreticalHannFactor;
+        var diff = Math.Abs(ratio - 1.0);
+        var passed = diff < 0.10; // 10% tolerance
 
         return new ValidationResult
         {

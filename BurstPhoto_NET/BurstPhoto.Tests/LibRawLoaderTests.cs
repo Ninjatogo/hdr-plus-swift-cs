@@ -1,21 +1,10 @@
 using BurstPhoto.Core.Implementations;
-using BurstPhoto.Core.Models;
-using Xunit;
 using Xunit.Abstractions;
-using System;
-using System.IO;
 
 namespace BurstPhoto.Tests;
 
-public class LibRawLoaderTests
+public class LibRawLoaderTests(ITestOutputHelper output)
 {
-    private readonly ITestOutputHelper _output;
-
-    public LibRawLoaderTests(ITestOutputHelper output)
-    {
-        _output = output;
-    }
-
     [SkippableFact]
     public void Load_Dji0011_ReturnsValidRawImage()
     {
@@ -35,7 +24,7 @@ public class LibRawLoaderTests
         var loader = new LibRawLoader();
 
         // Act
-        RawImage result = loader.Load(dngPath);
+        var result = loader.Load(dngPath);
 
         // Assert
         Assert.NotNull(result);
@@ -45,11 +34,11 @@ public class LibRawLoaderTests
         Assert.NotEmpty(result.Data);
 
         // Current implementation returns single-channel Bayer data (not RGB)
-        _output.WriteLine($"Dimensions: {result.Width}x{result.Height}");
-        _output.WriteLine($"Data length: {result.Data.Length}");
-        _output.WriteLine($"Expected: {result.Width * result.Height}");
-        _output.WriteLine($"IsBayerData: {result.IsBayerData}");
-        _output.WriteLine($"CfaPattern: [{string.Join(", ", result.CfaPattern)}]");
+        output.WriteLine($"Dimensions: {result.Width}x{result.Height}");
+        output.WriteLine($"Data length: {result.Data.Length}");
+        output.WriteLine($"Expected: {result.Width * result.Height}");
+        output.WriteLine($"IsBayerData: {result.IsBayerData}");
+        output.WriteLine($"CfaPattern: [{string.Join(", ", result.CfaPattern)}]");
         
         Assert.True(result.IsBayerData, "Expected Bayer data flag to be true");
         Assert.Equal(result.Width * result.Height, result.Data.Length);

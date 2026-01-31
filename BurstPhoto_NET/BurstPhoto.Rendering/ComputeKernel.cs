@@ -1,4 +1,3 @@
-using System;
 using Silk.NET.Vulkan;
 
 namespace BurstPhoto.Rendering;
@@ -79,7 +78,7 @@ public unsafe class ComputeKernel : IDisposable
     {
         if (code.Length % 4 != 0) throw new ArgumentException("Shader code size must be multiple of 4");
         
-        uint[] words = new uint[code.Length / 4];
+        var words = new uint[code.Length / 4];
         System.Buffer.BlockCopy(code, 0, words, 0, code.Length);
         
         fixed (uint* pCode = words)
@@ -103,9 +102,9 @@ public unsafe class ComputeKernel : IDisposable
     {
         _ctx.Vk.CmdBindPipeline(cmd, PipelineBindPoint.Compute, Pipeline);
 
-        uint groupX = (uint)Math.Ceiling(width / (double)WorkGroupSize.x);
-        uint groupY = (uint)Math.Ceiling(height / (double)WorkGroupSize.y);
-        uint groupZ = (uint)Math.Ceiling(depth / (double)WorkGroupSize.z);
+        var groupX = (uint)Math.Ceiling(width / (double)WorkGroupSize.x);
+        var groupY = (uint)Math.Ceiling(height / (double)WorkGroupSize.y);
+        var groupZ = (uint)Math.Ceiling(depth / (double)WorkGroupSize.z);
 
         _ctx.Vk.CmdDispatch(cmd, groupX, groupY, groupZ);
     }

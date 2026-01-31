@@ -2,22 +2,20 @@ using BitMiracle.LibTiff.Classic;
 using BurstPhoto.Core.Interfaces;
 using BurstPhoto.Core.Models;
 using System.IO;
-using System.Linq;
-using System.Runtime.InteropServices;
 
 namespace BurstPhoto.Core.Implementations;
 
 public class LibTiffDngWriter : IRawImageWriter
 {
     // DNG Tag Constants
-    private const TiffTag DNGVersion = (TiffTag)50706;
-    private const TiffTag DNGBackwardVersion = (TiffTag)50707;
+    private const TiffTag DngVersion = (TiffTag)50706;
+    private const TiffTag DngBackwardVersion = (TiffTag)50707;
     private const TiffTag UniqueCameraModel = (TiffTag)50708;
     private const TiffTag LocalizedCameraModel = (TiffTag)50709;
     
     // CFA / DNG Tags
-    private const TiffTag CFAPlaneColor = (TiffTag)50710;
-    private const TiffTag CFALayout = (TiffTag)50711; 
+    private const TiffTag CfaPlaneColor = (TiffTag)50710;
+    private const TiffTag CfaLayout = (TiffTag)50711; 
     private const TiffTag LinearizationTable = (TiffTag)50712;
     private const TiffTag BlackLevelRepeatDim = (TiffTag)50713;
     private const TiffTag BlackLevel = (TiffTag)50714;
@@ -52,10 +50,10 @@ public class LibTiffDngWriter : IRawImageWriter
     private const TiffTag BestQualityScale = (TiffTag)50780;
 
     // Standard TIFF/EP Tags
-    private const TiffTag CFARepeatPatternDim = (TiffTag)33421;
-    private const TiffTag CFAPattern = (TiffTag)33422;
+    private const TiffTag CfaRepeatPatternDim = (TiffTag)33421;
+    private const TiffTag CfaPattern = (TiffTag)33422;
 
-    private static bool _tagsRegistered = false;
+    private static bool _tagsRegistered;
 
     public LibTiffDngWriter()
     {
@@ -82,22 +80,22 @@ public class LibTiffDngWriter : IRawImageWriter
     public void Write(string path, RawImage image)
     {
         // Console.WriteLine($"LibTiffDngWriter.Write called for {path}");
-        using (Tiff output = Tiff.Open(path, "w"))
+        using var output = Tiff.Open(path, "w");
+        if (output is null)
         {
-            if (output == null)
-                throw new IOException($"Could not open file {path} for writing");
-            
-            ConfigureTiffTags(output, image);
-            WriteImageData(output, image);
-            
-            output.WriteDirectory();
+            throw new IOException($"Could not open file {path} for writing");
         }
+            
+        ConfigureTiffTags(output, image);
+        WriteImageData(output, image);
+            
+        output.WriteDirectory();
     }
 
     private void ConfigureTiffTags(Tiff tif, RawImage image)
     {
-        int width = image.Width;
-        int height = image.Height;
+        var width = image.Width;
+        var height = image.Height;
 
         tif.SetField(TiffTag.IMAGEWIDTH, width);
         tif.SetField(TiffTag.IMAGELENGTH, height);
@@ -105,13 +103,13 @@ public class LibTiffDngWriter : IRawImageWriter
         tif.SetField(TiffTag.DNGBACKWARDVERSION, "\x01\x01\x00\x00"); // 1.1.0.0
         
         // Use camera model from source if available, otherwise use generic name
-        string cameraModel = !string.IsNullOrEmpty(image.CameraModel) 
+        var cameraModel = !string.IsNullOrEmpty(image.CameraModel) 
             ? $"{image.CameraMake} {image.CameraModel}".Trim() 
             : "BurstPhoto_NET DNG Writer";
         tif.SetField(UniqueCameraModel, cameraModel);
 
         // Determine if RGB or Bayer
-        bool isRgb = image.Data.Length >= width * height * 3;
+        var isRgb = image.Data.Length >= width * height * 3;
 
         if (isRgb)
         {
@@ -130,18 +128,18 @@ public class LibTiffDngWriter : IRawImageWriter
             tif.SetField(TiffTag.PLANARCONFIG, PlanarConfig.CONTIG);
 
             // CFA Pattern - use source pattern if available
-            tif.SetField(CFARepeatPatternDim, 2, new short[] { 2, 2 });
-            if (image.CfaPattern != null && image.CfaPattern.Length >= 4)
+            tif.SetField(CfaRepeatPatternDim, 2, new short[] { 2, 2 });
+            if (image.CfaPattern is { Length: >= 4 })
             {
-                byte[] cfaBytes = image.CfaPattern.Take(4).Select(i => (byte)i).ToArray();
-                tif.SetField(CFAPattern, 4, cfaBytes);
+                var cfaBytes = image.CfaPattern.Take(4).Select(i => (byte)i).ToArray();
+                tif.SetField(CfaPattern, 4, cfaBytes);
             }
             else
             {
-                tif.SetField(CFAPattern, 4, new byte[] { 0, 1, 1, 2 }); // RGGB default
+                tif.SetField(CfaPattern, 4, new byte[] { 0, 1, 1, 2 }); // RGGB default
             }
-            tif.SetField(CFAPlaneColor, 3, new byte[] { 0, 1, 2 });
-            tif.SetField(CFALayout, 1);
+            tif.SetField(CfaPlaneColor, 3, new byte[] { 0, 1, 2 });
+            tif.SetField(CfaLayout, 1);
         }
 
         tif.SetField(TiffTag.ORIENTATION, Orientation.TOPLEFT);
@@ -149,19 +147,19 @@ public class LibTiffDngWriter : IRawImageWriter
         tif.SetField(TiffTag.ROWSPERSTRIP, height);
 
         // BlackLevel from source
-        if (image.BlackLevel != null && image.BlackLevel.Length >= 4)
+        if (image.BlackLevel is { Length: >= 4 })
         {
              // Must set RepeatDim if we have pattern black levels
              tif.SetField(BlackLevelRepeatDim, 2, new short[] { 2, 2 });
 
              // Convert int[] to double[] for RATIONAL tag
-             double[] bl = new double[image.BlackLevel.Length];
-             for(int i=0; i<bl.Length; i++) bl[i] = (double)image.BlackLevel[i];
+             var bl = new double[image.BlackLevel.Length];
+             for(var i=0; i<bl.Length; i++) bl[i] = image.BlackLevel[i];
              tif.SetField(BlackLevel, (short)bl.Length, bl);
         }
         else
         {
-             tif.SetField(BlackLevel, 1, new double[] { 0.0 });
+             tif.SetField(BlackLevel, 1, new[] { 0.0 });
         }
 
         // WhiteLevel from source
@@ -197,40 +195,40 @@ public class LibTiffDngWriter : IRawImageWriter
         */
 
         // ColorMatrix1 - use source if available, otherwise use identity
-        if (image.ColorMatrix1 != null && image.ColorMatrix1.Length >= 9)
+        if (image.ColorMatrix1 is { Length: >= 9 })
         {
             tif.SetField(ColorMatrix1, image.ColorMatrix1.Length, image.ColorMatrix1);
         }
         else
         {
             // Identity matrix as fallback
-            double[] identityMatrix = new double[] { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+            var identityMatrix = new double[] { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
             tif.SetField(ColorMatrix1, 9, identityMatrix);
         }
 
         // ColorMatrix2 - use source if available
-        if (image.ColorMatrix2 != null && image.ColorMatrix2.Length >= 9)
+        if (image.ColorMatrix2 is { Length: >= 9 })
         {
             tif.SetField(ColorMatrix2, image.ColorMatrix2.Length, image.ColorMatrix2);
         }
 
         // AsShotNeutral - use source if available, otherwise compute from ColorFactors
-        if (image.AsShotNeutral != null && image.AsShotNeutral.Length >= 3)
+        if (image.AsShotNeutral is { Length: >= 3 })
         {
             tif.SetField(AsShotNeutral, image.AsShotNeutral.Length, image.AsShotNeutral);
         }
-        else if (image.ColorFactors != null && image.ColorFactors.Length >= 3)
+        else if (image.ColorFactors is { Length: >= 3 })
         {
             // Compute from ColorFactors (camera multipliers) - these ARE the neutral values
-            double[] asShotNeutral = new double[3];
+            var asShotNeutral = new double[3];
             if (image.ColorFactors.Length >= 4)
             {
                  double r = image.ColorFactors[0];
-                 double g = (image.ColorFactors[1] + image.ColorFactors[2]) / 2.0;
+                 var g = (image.ColorFactors[1] + image.ColorFactors[2]) / 2.0;
                  double b = image.ColorFactors[3];
                  
                  // Normalize to make max = 1
-                 double maxVal = Math.Max(r, Math.Max(g, b));
+                 var maxVal = Math.Max(r, Math.Max(g, b));
                  if (maxVal > 0)
                  {
                      asShotNeutral[0] = r / maxVal;
@@ -239,12 +237,12 @@ public class LibTiffDngWriter : IRawImageWriter
                  }
                  else
                  {
-                     asShotNeutral = new double[] { 1, 1, 1 };
+                     asShotNeutral = [1, 1, 1];
                  }
             }
             else
             {
-                 asShotNeutral = new double[] { 1, 1, 1 };
+                 asShotNeutral = [1, 1, 1];
             }
             
             tif.SetField(AsShotNeutral, 3, asShotNeutral);
@@ -273,19 +271,19 @@ public class LibTiffDngWriter : IRawImageWriter
 
     private void WriteImageData(Tiff tif, RawImage image)
     {
-        int width = image.Width;
-        int height = image.Height;
-        ushort[] data = image.Data;
+        var width = image.Width;
+        var height = image.Height;
+        var data = image.Data;
         
-        bool isRgb = data.Length >= width * height * 3;
-        int samplesPerPixel = isRgb ? 3 : 1;
+        var isRgb = data.Length >= width * height * 3;
+        var samplesPerPixel = isRgb ? 3 : 1;
         
-        int scanlineSize = width * samplesPerPixel * 2;
-        byte[] buffer = new byte[scanlineSize];
+        var scanlineSize = width * samplesPerPixel * 2;
+        var buffer = new byte[scanlineSize];
 
-        for (int row = 0; row < height; row++)
+        for (var row = 0; row < height; row++)
         {
-            int rowOffset = row * width * samplesPerPixel;
+            var rowOffset = row * width * samplesPerPixel;
             Buffer.BlockCopy(data, rowOffset * 2, buffer, 0, scanlineSize);
             tif.WriteScanline(buffer, row);
         }
@@ -298,18 +296,18 @@ public class LibTiffDngWriter : IRawImageWriter
 
     private static void DngTagExtender(Tiff tif)
     {
-        TiffFieldInfo[] dngFields = new TiffFieldInfo[]
+        var dngFields = new[]
         {
-            new TiffFieldInfo(DNGVersion, 4, 4, TiffType.BYTE, FieldBit.Custom, false, false, "DNGVersion"),
-            new TiffFieldInfo(DNGBackwardVersion, 4, 4, TiffType.BYTE, FieldBit.Custom, false, false, "DNGBackwardVersion"),
+            new TiffFieldInfo(DngVersion, 4, 4, TiffType.BYTE, FieldBit.Custom, false, false, "DNGVersion"),
+            new TiffFieldInfo(DngBackwardVersion, 4, 4, TiffType.BYTE, FieldBit.Custom, false, false, "DNGBackwardVersion"),
             new TiffFieldInfo(UniqueCameraModel, -1, -1, TiffType.ASCII, FieldBit.Custom, false, false, "UniqueCameraModel"),
             new TiffFieldInfo(LocalizedCameraModel, -1, -1, TiffType.ASCII, FieldBit.Custom, false, false, "LocalizedCameraModel"),
             
             // CFA Tags - Set pass_count=true for arrays
-            new TiffFieldInfo(CFARepeatPatternDim, 2, 2, TiffType.SHORT, FieldBit.Custom, false, true, "CFARepeatPatternDim"),
-            new TiffFieldInfo(CFAPattern, -1, -1, TiffType.BYTE, FieldBit.Custom, false, true, "CFAPattern"),
-            new TiffFieldInfo(CFAPlaneColor, -1, -1, TiffType.BYTE, FieldBit.Custom, false, true, "CFAPlaneColor"),
-            new TiffFieldInfo(CFALayout, 1, 1, TiffType.SHORT, FieldBit.Custom, false, false, "CFALayout"), // Fixed 1, no array
+            new TiffFieldInfo(CfaRepeatPatternDim, 2, 2, TiffType.SHORT, FieldBit.Custom, false, true, "CFARepeatPatternDim"),
+            new TiffFieldInfo(CfaPattern, -1, -1, TiffType.BYTE, FieldBit.Custom, false, true, "CFAPattern"),
+            new TiffFieldInfo(CfaPlaneColor, -1, -1, TiffType.BYTE, FieldBit.Custom, false, true, "CFAPlaneColor"),
+            new TiffFieldInfo(CfaLayout, 1, 1, TiffType.SHORT, FieldBit.Custom, false, false, "CFALayout"), // Fixed 1, no array
             
             new TiffFieldInfo(LinearizationTable, -1, -1, TiffType.SHORT, FieldBit.Custom, false, true, "LinearizationTable"),
             new TiffFieldInfo(BlackLevelRepeatDim, 2, 2, TiffType.SHORT, FieldBit.Custom, false, true, "BlackLevelRepeatDim"),

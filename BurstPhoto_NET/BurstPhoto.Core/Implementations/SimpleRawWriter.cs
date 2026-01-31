@@ -9,23 +9,23 @@ public class SimpleRawWriter : IRawImageWriter
 {
     public void Write(string path, RawImage image)
     {
-        int pixelCount = image.Width * image.Height;
-        bool isRgb = image.Data.Length >= pixelCount * 3; // >= to be safe
+        var pixelCount = image.Width * image.Height;
+        var isRgb = image.Data.Length >= pixelCount * 3; // >= to be safe
 
         using var fs = File.Create(path);
         using var writer = new BinaryWriter(fs);
 
         // Header
-        string magic = isRgb ? "P6" : "P5";
-        string header = $"{magic}\n{image.Width} {image.Height}\n65535\n";
-        byte[] headerBytes = Encoding.ASCII.GetBytes(header);
+        var magic = isRgb ? "P6" : "P5";
+        var header = $"{magic}\n{image.Width} {image.Height}\n65535\n";
+        var headerBytes = Encoding.ASCII.GetBytes(header);
         writer.Write(headerBytes);
 
         // Data (Netpbm is Big Endian)
-        byte[] buffer = new byte[image.Data.Length * 2];
-        for (int i = 0; i < image.Data.Length; i++)
+        var buffer = new byte[image.Data.Length * 2];
+        for (var i = 0; i < image.Data.Length; i++)
         {
-            ushort val = image.Data[i];
+            var val = image.Data[i];
             // Swap to Big Endian
             buffer[2 * i] = (byte)(val >> 8);
             buffer[2 * i + 1] = (byte)(val & 0xFF);

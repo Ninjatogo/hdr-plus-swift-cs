@@ -3,27 +3,17 @@ using Spectre.Console;
 using BurstPhoto.Core.Interfaces;
 using BurstPhoto.Core.Models;
 using System.ComponentModel;
-using System.IO;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace BurstPhoto.CLI.Commands;
 
-public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
+public class ProcessCommand(IDenoisePipeline pipeline) : AsyncCommand<ProcessCommand.Settings>
 {
-    private readonly IDenoisePipeline _pipeline;
-
-    public ProcessCommand(IDenoisePipeline pipeline)
-    {
-        _pipeline = pipeline;
-    }
-
     public class Settings : CommandSettings
     {
         [CommandArgument(0, "<INPUT...>")]
         [Description("Input raw file paths (minimum 2 required)")]
-        public string[] InputPaths { get; set; } = Array.Empty<string>();
+        public string[] InputPaths { get; set; } = [];
 
         [CommandOption("-o|--output")]
         [Description("Output directory (default: current directory)")]
@@ -99,15 +89,15 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
         }
 
         TextWriter? logWriter = null;
-        TextWriter originalOut = Console.Out;
+        var originalOut = Console.Out;
 
         try
         {
             // Setup logging if requested
             if (settings.Log || !string.IsNullOrEmpty(settings.LogFile))
             {
-                string logPath = settings.LogFile ?? GenerateLogPath();
-                string? logDir = Path.GetDirectoryName(logPath);
+                var logPath = settings.LogFile ?? GenerateLogPath();
+                var logDir = Path.GetDirectoryName(logPath);
                 if (!string.IsNullOrEmpty(logDir) && !Directory.Exists(logDir))
                 {
                     Directory.CreateDirectory(logDir);
@@ -142,7 +132,7 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
 
             AnsiConsole.MarkupLine($"[blue]Processing {settings.InputPaths.Length} images...[/]");
 
-            string outputPath = await _pipeline.ProcessAsync(
+            var outputPath = await pipeline.ProcessAsync(
                 settings.InputPaths,
                 options,
                 progress,
@@ -163,14 +153,14 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
             if (logWriter != null)
             {
                 Console.SetOut(originalOut);
-                logWriter.Dispose();
+                await logWriter.DisposeAsync();
             }
         }
     }
     
     private static string GenerateLogPath()
     {
-        string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
         return Path.Combine("logs", $"process_{timestamp}.log");
     }
 
@@ -189,9 +179,9 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
         {
             "off" => ExposureControlOption.Off,
             "linearfullrange" => ExposureControlOption.LinearFullRange,
-            "linear1ev" => ExposureControlOption.Linear1EV,
-            "curve0ev" => ExposureControlOption.Curve0EV,
-            "curve1ev" => ExposureControlOption.Curve1EV,
+            "linear1ev" => ExposureControlOption.Linear1Ev,
+            "curve0ev" => ExposureControlOption.Curve0Ev,
+            "curve1ev" => ExposureControlOption.Curve1Ev,
             _ => throw new ArgumentException($"Invalid exposure control: {value}")
         };
     }
@@ -203,7 +193,7 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
             // Temporarily create a VulkanContext just to enumerate devices
             // The constructor will print all available GPUs
             Console.WriteLine("Enumerating available Vulkan devices...\n");
-            using var ctx = new BurstPhoto.Rendering.VulkanContext();
+            using var ctx = new Rendering.VulkanContext();
             Console.WriteLine("\nTo use a specific GPU, use one of these methods:");
             Console.WriteLine("  1. Command-line: --gpu <index>");
             Console.WriteLine("  2. Environment variable: set BURSTPHOTO_GPU=<index>");
@@ -219,40 +209,31 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
 /// <summary>
 /// TextWriter that writes to two outputs simultaneously (console and file).
 /// </summary>
-internal class TeeTextWriter : TextWriter
+internal class TeeTextWriter(TextWriter primary, TextWriter secondary) : TextWriter
 {
-    private readonly TextWriter _primary;
-    private readonly TextWriter _secondary;
-
-    public TeeTextWriter(TextWriter primary, TextWriter secondary)
-    {
-        _primary = primary;
-        _secondary = secondary;
-    }
-
-    public override Encoding Encoding => _primary.Encoding;
+    public override Encoding Encoding => primary.Encoding;
 
     public override void Write(char value)
     {
-        _primary.Write(value);
-        _secondary.Write(value);
+        primary.Write(value);
+        secondary.Write(value);
     }
 
     public override void Write(string? value)
     {
-        _primary.Write(value);
-        _secondary.Write(value);
+        primary.Write(value);
+        secondary.Write(value);
     }
 
     public override void WriteLine(string? value)
     {
-        _primary.WriteLine(value);
-        _secondary.WriteLine(value);
+        primary.WriteLine(value);
+        secondary.WriteLine(value);
     }
 
     public override void Flush()
     {
-        _primary.Flush();
-        _secondary.Flush();
+        primary.Flush();
+        secondary.Flush();
     }
 }

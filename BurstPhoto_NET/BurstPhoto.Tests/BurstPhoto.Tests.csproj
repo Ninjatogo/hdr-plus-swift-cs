@@ -27,4 +27,8 @@
     <ProjectReference Include="..\BurstPhoto.Rendering\BurstPhoto.Rendering.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="TestResults\" />
+  </ItemGroup>
+
 </Project>
