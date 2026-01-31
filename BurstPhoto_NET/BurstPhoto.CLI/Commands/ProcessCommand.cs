@@ -70,6 +70,10 @@ public class ProcessCommand(IDenoisePipeline pipeline) : AsyncCommand<ProcessCom
         [CommandOption("--skip-reduce-artifacts")]
         [Description("Debug: Skip the reduce_artifacts_tile_border pass to test if it causes the 8x8 grid pattern")]
         public bool SkipReduceArtifacts { get; set; } = false;
+
+        [CommandOption("--profile")]
+        [Description("Enable performance profiling: outputs detailed timing for each pipeline stage")]
+        public bool Profile { get; set; } = false;
     }
 
     public override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
@@ -122,7 +126,8 @@ public class ProcessCommand(IDenoisePipeline pipeline) : AsyncCommand<ProcessCom
                     : OutputBitDepthOption.Native,
                 EnableDebugDump = settings.DebugDump,
                 EnableFftValidation = settings.ValidateFft,
-                SkipReduceArtifacts = settings.SkipReduceArtifacts
+                SkipReduceArtifacts = settings.SkipReduceArtifacts,
+                EnableProfiling = settings.Profile
             };
 
             var progress = new ProcessingProgress();

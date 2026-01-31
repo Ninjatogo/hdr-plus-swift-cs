@@ -90,6 +90,12 @@ public class ProcessingOptions
     public bool SkipReduceArtifacts { get; set; }
 
     /// <summary>
+    /// Enable performance profiling: outputs detailed timing for each pipeline stage.
+    /// Use with --profile CLI flag for benchmarking.
+    /// </summary>
+    public bool EnableProfiling { get; set; }
+
+    /// <summary>
     /// Gets the tile size in pixels for the given option.
     /// </summary>
     public static int GetTileSizePixels(TileSizeOption option) => option switch

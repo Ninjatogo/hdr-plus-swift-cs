@@ -761,3 +761,27 @@ void accumulate_cropped_region(uint3 DTid : SV_DispatchThreadID)
     OutTextureFloat[dstPos] = accVal + srcVal;
 }
 
+// -------------------------------------------------------------------------
+// GPU Normalization (divide pixelAccum by weightAccum)
+// -------------------------------------------------------------------------
+// Used in spatial merge mode to normalize accumulated pixels by accumulated weights.
+// This replaces the CPU-based loop: result = pixelAccum / weightAccum
+// Eliminates two GetData() calls and one CPU loop.
+//
+// Bindings:
+// - t0 (InTextureFloat): pixel accumulator
+// - t3 (AuxTextureFloat): weight accumulator
+// - u10 (OutTextureFloat): output (normalized result)
+
+[numthreads(16, 16, 1)]
+void divide_textures(uint3 DTid : SV_DispatchThreadID)
+{
+    float pixelVal = InTextureFloat.Load(int3(DTid.xy, 0));
+    float weightVal = AuxTextureFloat.Load(int3(DTid.xy, 0));
+
+    // Avoid division by zero - if weight is too small, use pixel value directly
+    float result = (weightVal > 0.0001f) ? (pixelVal / weightVal) : pixelVal;
+
+    OutTextureFloat[DTid.xy] = result;
+}
+

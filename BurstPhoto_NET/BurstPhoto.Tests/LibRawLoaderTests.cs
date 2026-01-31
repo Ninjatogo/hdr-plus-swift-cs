@@ -1,11 +1,10 @@
 using BurstPhoto.Core.Implementations;
-using Xunit.Abstractions;
 
 namespace BurstPhoto.Tests;
 
 public class LibRawLoaderTests(ITestOutputHelper output)
 {
-    [SkippableFact]
+    [Fact]
     public void Load_Dji0011_ReturnsValidRawImage()
     {
         // Arrange
@@ -18,8 +17,8 @@ public class LibRawLoaderTests(ITestOutputHelper output)
             dngPath = Path.Combine(repoRoot, "DJI_0011.dng");
         }
 
-        // Skip test if file doesn't exist
-        Skip.If(!File.Exists(dngPath), $"Test file not found at {dngPath}");
+        // Skip test if file doesn't exist (xUnit v3 built-in skip)
+        Assert.SkipWhen(!File.Exists(dngPath), $"Test file not found at {dngPath}");
 
         var loader = new LibRawLoader();
 

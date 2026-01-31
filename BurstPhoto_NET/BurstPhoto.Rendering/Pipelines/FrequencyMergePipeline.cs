@@ -28,6 +28,11 @@ public unsafe class FrequencyMergePipeline
     private ComputeKernel? _kernelDeconvoluteFrequency;
     private ComputeKernel? _kernelArtifactsTileBorder;
 
+    // GPU reduction/accumulation kernels (eliminates CPU roundtrips)
+    private ComputeKernel? _kernelReduceMeanColumns;
+    private ComputeKernel? _kernelReduceMeanFinal;
+    private ComputeKernel? _kernelAccumulateMismatchRgba;
+
     public FrequencyMergePipeline(VulkanContext ctx, VulkanDescriptorManager descriptors, VulkanKernelManager kernelManager)
     {
         _ctx = ctx;
@@ -82,12 +87,20 @@ public unsafe class FrequencyMergePipeline
         _kernelMergeFrequency = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.MergeFrequencyDomain, _frequencyLayout);
         _kernelDeconvoluteFrequency = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.DeconvoluteFrequency, _frequencyLayout);
 
+        // GPU reduction/accumulation kernels
+        _kernelReduceMeanColumns = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.ReduceMeanColumns, _frequencyLayout);
+        _kernelReduceMeanFinal = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.ReduceMeanFinal, _frequencyLayout);
+        _kernelAccumulateMismatchRgba = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.AccumulateMismatchRgba, _frequencyLayout);
+
         Console.WriteLine("[FrequencyMergePipeline] Frequency domain shaders compiled successfully!");
     }
 
     /// <summary>
     /// Executes the full frequency domain merge pipeline for one alternate frame.
     /// Computes RMS, mismatch, highlights, forward FFT, and accumulates into pixelAccumFT.
+    ///
+    /// OPTIMIZED: Uses batched command buffers with pipeline barriers instead of
+    /// individual GPU syncs. Reduces sync points from ~11 to 3 (Phase1, Mean readback, Phase2).
     /// </summary>
     public void ExecuteMergeFrequency(
         VulkanImage refFt,
@@ -158,122 +171,216 @@ public unsafe class FrequencyMergePipeline
         var ftWidth = width * 2;
         using var texAlignedFt = new VulkanImage(_ctx, (uint)ftWidth, (uint)height, Format.R32G32B32A32Sfloat, ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit);
 
-        // Transition
-        var cmd = _ctx.BeginSingleTimeCommands();
-        texDiff.TransitionLayout(ImageLayout.General, cmd);
-        texRms.TransitionLayout(ImageLayout.General, cmd);
-        texMismatch.TransitionLayout(ImageLayout.General, cmd);
-        texHighlights.TransitionLayout(ImageLayout.General, cmd);
-        texAlignedFt.TransitionLayout(ImageLayout.General, cmd);
-        _ctx.EndSingleTimeCommands(cmd);
+        // Create reduction buffer for GPU mean computation
+        using var reductionBuffer = new VulkanBuffer(_ctx, (ulong)(nTilesX * sizeof(float)),
+            BufferUsageFlags.StorageBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
 
-        // Helper to dispatch non-FFT kernels (per-pixel dispatch)
-        void DispatchPixel(ComputeKernel kernel, VulkanImage u0, VulkanImage t0, VulkanImage? t1 = null, VulkanImage? t2 = null, VulkanImage? t3 = null, VulkanImage? t4 = null)
-        {
-            var cmd2 = _ctx.BeginSingleTimeCommands();
-            var set = _descriptors.Allocate(_frequencyLayout);
-            _descriptors.UpdateBuffer(set, ShaderBindings.FrequencyDomain.Params, paramBuffer.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
-            if (t0 is not null) _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.RefTexture, t0.View, ImageLayout.General, DescriptorType.SampledImage);
-            if (t1 is not null) _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.AlignedTexture, t1.View, ImageLayout.General, DescriptorType.SampledImage);
-            if (t2 is not null) _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.RmsTexture, t2.View, ImageLayout.General, DescriptorType.SampledImage);
-            if (t3 is not null) _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.MismatchTexture, t3.View, ImageLayout.General, DescriptorType.SampledImage);
-            if (t4 is not null) _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.HighlightsTexture, t4.View, ImageLayout.General, DescriptorType.SampledImage);
-            if (u0 is not null) _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.OutputTexture, u0.View, ImageLayout.General, DescriptorType.StorageImage);
+        // ============================================================================
+        // PHASE 1: All operations up to mean computation (batched into single cmd buffer)
+        // This includes: layout transitions, AbsDiff, RMS, Mismatch, MeanReduction
+        // ============================================================================
+        var cmdPhase1 = _ctx.BeginSingleTimeCommands();
 
-            kernel.BindPipeline(cmd2);
-            _ctx.Vk.CmdBindDescriptorSets(cmd2, PipelineBindPoint.Compute, kernel.PipelineLayout, 0, 1, &set, 0, null);
-            kernel.Dispatch(cmd2, (uint)width, (uint)height, 1);
-            _ctx.EndSingleTimeCommands(cmd2);
-        }
+        // 0. Layout transitions for all temporary textures
+        texDiff.TransitionLayout(ImageLayout.General, cmdPhase1);
+        texRms.TransitionLayout(ImageLayout.General, cmdPhase1);
+        texMismatch.TransitionLayout(ImageLayout.General, cmdPhase1);
+        texHighlights.TransitionLayout(ImageLayout.General, cmdPhase1);
+        texAlignedFt.TransitionLayout(ImageLayout.General, cmdPhase1);
 
-        // Helper to dispatch FFT kernels (per-tile dispatch)
-        void DispatchTile(ComputeKernel kernel, VulkanImage u0, VulkanImage t0, VulkanImage? t1 = null, VulkanImage? t2 = null, VulkanImage? t3 = null, VulkanImage? t4 = null)
-        {
-            var cmd2 = _ctx.BeginSingleTimeCommands();
-            var set = _descriptors.Allocate(_frequencyLayout);
-            _descriptors.UpdateBuffer(set, ShaderBindings.FrequencyDomain.Params, paramBuffer.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
-            if (t0 is not null) _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.RefTexture, t0.View, ImageLayout.General, DescriptorType.SampledImage);
-            if (t1 is not null) _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.AlignedTexture, t1.View, ImageLayout.General, DescriptorType.SampledImage);
-            if (t2 is not null) _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.RmsTexture, t2.View, ImageLayout.General, DescriptorType.SampledImage);
-            if (t3 is not null) _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.MismatchTexture, t3.View, ImageLayout.General, DescriptorType.SampledImage);
-            if (t4 is not null) _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.HighlightsTexture, t4.View, ImageLayout.General, DescriptorType.SampledImage);
-            if (u0 is not null) _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.OutputTexture, u0.View, ImageLayout.General, DescriptorType.StorageImage);
+        // Pre-allocate descriptor sets for phase 1
+        var setAbsDiff = _descriptors.Allocate(_frequencyLayout);
+        var setRms = _descriptors.Allocate(_frequencyLayout);
+        var setMismatch = _descriptors.Allocate(_frequencyLayout);
+        var setReduceCol = _descriptors.Allocate(_frequencyLayout);
+        var setReduceFinal = _descriptors.Allocate(_frequencyLayout);
 
-            kernel.BindPipeline(cmd2);
-            _ctx.Vk.CmdBindDescriptorSets(cmd2, PipelineBindPoint.Compute, kernel.PipelineLayout, 0, 1, &set, 0, null);
+        // Update descriptor sets
+        // AbsDiff
+        _descriptors.UpdateBuffer(setAbsDiff, ShaderBindings.FrequencyDomain.Params, paramBuffer.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
+        _descriptors.UpdateImage(setAbsDiff, ShaderBindings.FrequencyDomain.RefTexture, refPyramid0.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(setAbsDiff, ShaderBindings.FrequencyDomain.AlignedTexture, aligned.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(setAbsDiff, ShaderBindings.FrequencyDomain.OutputTexture, texDiff.View, ImageLayout.General, DescriptorType.StorageImage);
 
-            var nTilesXLocal = (uint)(width / tileSizeMerge);
-            var nTilesYLocal = (uint)(height / tileSizeMerge);
-            kernel.Dispatch(cmd2, nTilesXLocal, nTilesYLocal, 1);
-            _ctx.EndSingleTimeCommands(cmd2);
-        }
+        // RMS
+        _descriptors.UpdateBuffer(setRms, ShaderBindings.FrequencyDomain.Params, paramBuffer.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
+        _descriptors.UpdateImage(setRms, ShaderBindings.FrequencyDomain.RefTexture, refPyramid0.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(setRms, ShaderBindings.FrequencyDomain.OutputTexture, texRms.View, ImageLayout.General, DescriptorType.StorageImage);
 
-        // Helper to dispatch tile-grid kernels (for RMS, Mismatch, Highlights)
-        void DispatchTileGrid(ComputeKernel kernel, VulkanImage u0, VulkanImage t0, VulkanImage? t1 = null, VulkanImage? t2 = null)
-        {
-            var cmd2 = _ctx.BeginSingleTimeCommands();
-            var set = _descriptors.Allocate(_frequencyLayout);
-            _descriptors.UpdateBuffer(set, ShaderBindings.FrequencyDomain.Params, paramBuffer.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
-            if (t0 is not null) _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.RefTexture, t0.View, ImageLayout.General, DescriptorType.SampledImage);
-            if (t1 is not null) _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.AlignedTexture, t1.View, ImageLayout.General, DescriptorType.SampledImage);
-            if (t2 is not null) _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.RmsTexture, t2.View, ImageLayout.General, DescriptorType.SampledImage);
-            if (u0 is not null) _descriptors.UpdateImage(set, ShaderBindings.FrequencyDomain.OutputTexture, u0.View, ImageLayout.General, DescriptorType.StorageImage);
+        // Mismatch
+        _descriptors.UpdateBuffer(setMismatch, ShaderBindings.FrequencyDomain.Params, paramBuffer.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
+        _descriptors.UpdateImage(setMismatch, ShaderBindings.FrequencyDomain.RefTexture, texDiff.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(setMismatch, ShaderBindings.FrequencyDomain.RmsTexture, texRms.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(setMismatch, ShaderBindings.FrequencyDomain.OutputTexture, texMismatch.View, ImageLayout.General, DescriptorType.StorageImage);
 
-            kernel.BindPipeline(cmd2);
-            _ctx.Vk.CmdBindDescriptorSets(cmd2, PipelineBindPoint.Compute, kernel.PipelineLayout, 0, 1, &set, 0, null);
-            kernel.Dispatch(cmd2, (uint)nTilesX, (uint)nTilesY, 1);
-            _ctx.EndSingleTimeCommands(cmd2);
-        }
+        // Reduction passes
+        _descriptors.UpdateBuffer(setReduceCol, ShaderBindings.FrequencyDomain.Params, paramBuffer.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
+        _descriptors.UpdateImage(setReduceCol, ShaderBindings.FrequencyDomain.RefTexture, texMismatch.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateBuffer(setReduceCol, 11, reductionBuffer.Handle, (ulong)(nTilesX * sizeof(float)), DescriptorType.StorageBuffer);
 
-        // 1. Abs Diff (full image size dispatch)
-        DispatchPixel(_kernelAbsDiff!, texDiff, refPyramid0, aligned);
+        _descriptors.UpdateBuffer(setReduceFinal, ShaderBindings.FrequencyDomain.Params, paramBuffer.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
+        _descriptors.UpdateImage(setReduceFinal, ShaderBindings.FrequencyDomain.RefTexture, texMismatch.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateBuffer(setReduceFinal, 11, reductionBuffer.Handle, (ulong)(nTilesX * sizeof(float)), DescriptorType.StorageBuffer);
 
-        // 2. RMS (tile grid dispatch)
-        DispatchTileGrid(_kernelRms!, texRms, refPyramid0);
+        // 1. AbsDiff (full image size dispatch)
+        _kernelAbsDiff!.BindPipeline(cmdPhase1);
+        _ctx.Vk.CmdBindDescriptorSets(cmdPhase1, PipelineBindPoint.Compute, _kernelAbsDiff.PipelineLayout, 0, 1, &setAbsDiff, 0, null);
+        _kernelAbsDiff.Dispatch(cmdPhase1, (uint)width, (uint)height, 1);
 
-        // 3. Mismatch (tile grid dispatch)
-        DispatchTileGrid(_kernelMismatch!, texMismatch, texDiff, texRms);
+        // Barrier: AbsDiff output -> Mismatch input
+        AddComputeBarrier(cmdPhase1);
 
-        // 4. Mean Mismatch (CPU Readback)
-        var misData = texMismatch.GetData<float>();
-        double sum = 0;
-        for (var k = 0; k < misData.Length; k += 4)
-        {
-            sum += misData[k];
-        }
-        var mean = (float)(sum / (misData.Length / 4));
-        if (mean < 1e-6f)
-        {
-            mean = 1e-6f;
-        }
+        // 2. RMS (tile grid dispatch) - can run in parallel with AbsDiff since it reads refPyramid0
+        _kernelRms!.BindPipeline(cmdPhase1);
+        _ctx.Vk.CmdBindDescriptorSets(cmdPhase1, PipelineBindPoint.Compute, _kernelRms.PipelineLayout, 0, 1, &setRms, 0, null);
+        _kernelRms.Dispatch(cmdPhase1, (uint)nTilesX, (uint)nTilesY, 1);
+
+        // Barrier: RMS output -> Mismatch input (combined with AbsDiff barrier above)
+        AddComputeBarrier(cmdPhase1);
+
+        // 3. Mismatch (tile grid dispatch) - depends on texDiff and texRms
+        _kernelMismatch!.BindPipeline(cmdPhase1);
+        _ctx.Vk.CmdBindDescriptorSets(cmdPhase1, PipelineBindPoint.Compute, _kernelMismatch.PipelineLayout, 0, 1, &setMismatch, 0, null);
+        _kernelMismatch.Dispatch(cmdPhase1, (uint)nTilesX, (uint)nTilesY, 1);
+
+        // Barrier: Mismatch output -> Reduction input
+        AddComputeBarrier(cmdPhase1);
+
+        // 4. Mean Mismatch Reduction Pass 1: Reduce columns
+        _kernelReduceMeanColumns!.BindPipeline(cmdPhase1);
+        _ctx.Vk.CmdBindDescriptorSets(cmdPhase1, PipelineBindPoint.Compute, _kernelReduceMeanColumns.PipelineLayout, 0, 1, &setReduceCol, 0, null);
+        _kernelReduceMeanColumns.Dispatch(cmdPhase1, (uint)((nTilesX + 255) / 256), 1, 1);
+
+        // Barrier: Column reduction -> Final reduction
+        AddComputeBarrier(cmdPhase1);
+
+        // 5. Mean Mismatch Reduction Pass 2: Final reduction
+        _kernelReduceMeanFinal!.BindPipeline(cmdPhase1);
+        _ctx.Vk.CmdBindDescriptorSets(cmdPhase1, PipelineBindPoint.Compute, _kernelReduceMeanFinal.PipelineLayout, 0, 1, &setReduceFinal, 0, null);
+        _kernelReduceMeanFinal.Dispatch(cmdPhase1, 1, 1, 1);
+
+        // Submit phase 1 and wait - we need the mean value on CPU
+        _ctx.EndSingleTimeCommands(cmdPhase1);
+
+        // Read back single float (tiny transfer, not a full texture read)
+        var meanResult = reductionBuffer.GetData<float>(1);
+        var mean = meanResult[0];
 
         freqParams.MeanMismatch = mean * 2.0f;
         paramBuffer.SetData([freqParams]);
 
-        // 5. Normalize Mismatch (tile grid dispatch)
-        DispatchTileGrid(_kernelNormalizeMismatch!, texMismatch, texMismatch);
+        // ============================================================================
+        // PHASE 2: Normalize, Accumulate, Highlights, Forward FFT, Merge
+        // All batched into a single command buffer
+        // ============================================================================
+        var cmdPhase2 = _ctx.BeginSingleTimeCommands();
 
-        // 5b. Accumulate normalized mismatch into totalMismatchTexture
+        // Pre-allocate descriptor sets for phase 2
+        var setNormalize = _descriptors.Allocate(_frequencyLayout);
+        var setHighlights = _descriptors.Allocate(_frequencyLayout);
+        var setForwardFft = _descriptors.Allocate(_frequencyLayout);
+        var setMerge = _descriptors.Allocate(_frequencyLayout);
+
+        // Update descriptor sets
+        // NormalizeMismatch (in-place)
+        _descriptors.UpdateBuffer(setNormalize, ShaderBindings.FrequencyDomain.Params, paramBuffer.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
+        _descriptors.UpdateImage(setNormalize, ShaderBindings.FrequencyDomain.RefTexture, texMismatch.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(setNormalize, ShaderBindings.FrequencyDomain.OutputTexture, texMismatch.View, ImageLayout.General, DescriptorType.StorageImage);
+
+        // Highlights
+        _descriptors.UpdateBuffer(setHighlights, ShaderBindings.FrequencyDomain.Params, paramBuffer.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
+        _descriptors.UpdateImage(setHighlights, ShaderBindings.FrequencyDomain.RefTexture, aligned.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(setHighlights, ShaderBindings.FrequencyDomain.OutputTexture, texHighlights.View, ImageLayout.General, DescriptorType.StorageImage);
+
+        // Forward FFT
+        _descriptors.UpdateBuffer(setForwardFft, ShaderBindings.FrequencyDomain.Params, paramBuffer.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
+        _descriptors.UpdateImage(setForwardFft, ShaderBindings.FrequencyDomain.RefTexture, aligned.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(setForwardFft, ShaderBindings.FrequencyDomain.OutputTexture, texAlignedFt.View, ImageLayout.General, DescriptorType.StorageImage);
+
+        // MergeFrequency
+        _descriptors.UpdateBuffer(setMerge, ShaderBindings.FrequencyDomain.Params, paramBuffer.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
+        _descriptors.UpdateImage(setMerge, ShaderBindings.FrequencyDomain.RefTexture, refFt.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(setMerge, ShaderBindings.FrequencyDomain.AlignedTexture, texAlignedFt.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(setMerge, ShaderBindings.FrequencyDomain.RmsTexture, texRms.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(setMerge, ShaderBindings.FrequencyDomain.MismatchTexture, texMismatch.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(setMerge, ShaderBindings.FrequencyDomain.HighlightsTexture, texHighlights.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(setMerge, ShaderBindings.FrequencyDomain.OutputTexture, pixelAccumFt.View, ImageLayout.General, DescriptorType.StorageImage);
+
+        // 6. Normalize Mismatch (tile grid dispatch)
+        _kernelNormalizeMismatch!.BindPipeline(cmdPhase2);
+        _ctx.Vk.CmdBindDescriptorSets(cmdPhase2, PipelineBindPoint.Compute, _kernelNormalizeMismatch.PipelineLayout, 0, 1, &setNormalize, 0, null);
+        _kernelNormalizeMismatch.Dispatch(cmdPhase2, (uint)nTilesX, (uint)nTilesY, 1);
+
+        // Barrier: NormalizeMismatch -> Accumulate/Merge
+        AddComputeBarrier(cmdPhase2);
+
+        // 6b. Accumulate normalized mismatch into totalMismatchTexture (GPU)
         if (totalMismatchTexture is not null && totalImageCount > 1)
         {
-            var mismatchData = texMismatch.GetData<float>();
-            var accumData = totalMismatchTexture.GetData<float>();
-            var divisor = (float)totalImageCount;
-            for (var i = 0; i < mismatchData.Length; i++)
-            {
-                accumData[i] += mismatchData[i] / divisor;
-            }
-            totalMismatchTexture.SetData(accumData);
+            // Need to update params with NumTextures
+            freqParams.NumTextures = totalImageCount;
+            paramBuffer.SetData([freqParams]);
+
+            totalMismatchTexture.TransitionLayout(ImageLayout.General, cmdPhase2);
+
+            var setAccum = _descriptors.Allocate(_frequencyLayout);
+            _descriptors.UpdateBuffer(setAccum, ShaderBindings.FrequencyDomain.Params, paramBuffer.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
+            _descriptors.UpdateImage(setAccum, ShaderBindings.FrequencyDomain.RefTexture, texMismatch.View, ImageLayout.General, DescriptorType.SampledImage);
+            _descriptors.UpdateImage(setAccum, ShaderBindings.FrequencyDomain.OutputTexture, totalMismatchTexture.View, ImageLayout.General, DescriptorType.StorageImage);
+
+            _kernelAccumulateMismatchRgba!.BindPipeline(cmdPhase2);
+            _ctx.Vk.CmdBindDescriptorSets(cmdPhase2, PipelineBindPoint.Compute, _kernelAccumulateMismatchRgba.PipelineLayout, 0, 1, &setAccum, 0, null);
+            _kernelAccumulateMismatchRgba.Dispatch(cmdPhase2, (uint)nTilesX, (uint)nTilesY, 1);
+
+            // Restore NumTextures
+            freqParams.NumTextures = 1;
+            paramBuffer.SetData([freqParams]);
+
+            AddComputeBarrier(cmdPhase2);
         }
 
-        // 6. Highlights (tile grid dispatch)
-        DispatchTileGrid(_kernelHighlightsNorm!, texHighlights, aligned);
+        // 7. Highlights (tile grid dispatch) - independent, can run before FFT
+        _kernelHighlightsNorm!.BindPipeline(cmdPhase2);
+        _ctx.Vk.CmdBindDescriptorSets(cmdPhase2, PipelineBindPoint.Compute, _kernelHighlightsNorm.PipelineLayout, 0, 1, &setHighlights, 0, null);
+        _kernelHighlightsNorm.Dispatch(cmdPhase2, (uint)nTilesX, (uint)nTilesY, 1);
 
-        // 7. Forward FFT Aligned (per-tile FFT dispatch)
-        DispatchTile(_kernelForwardFft!, texAlignedFt, aligned);
+        // 8. Forward FFT Aligned (per-tile FFT dispatch) - independent of highlights
+        _kernelForwardFft!.BindPipeline(cmdPhase2);
+        _ctx.Vk.CmdBindDescriptorSets(cmdPhase2, PipelineBindPoint.Compute, _kernelForwardFft.PipelineLayout, 0, 1, &setForwardFft, 0, null);
+        _kernelForwardFft.Dispatch(cmdPhase2, (uint)nTilesX, (uint)nTilesY, 1);
 
-        // 8. Merge Frequency (per-tile dispatch)
-        DispatchTile(_kernelMergeFrequency!, pixelAccumFt, refFt, texAlignedFt, texRms, texMismatch, texHighlights);
+        // Barrier: Forward FFT and Highlights -> Merge
+        AddComputeBarrier(cmdPhase2);
+
+        // 9. Merge Frequency (per-tile dispatch)
+        _kernelMergeFrequency!.BindPipeline(cmdPhase2);
+        _ctx.Vk.CmdBindDescriptorSets(cmdPhase2, PipelineBindPoint.Compute, _kernelMergeFrequency.PipelineLayout, 0, 1, &setMerge, 0, null);
+        _kernelMergeFrequency.Dispatch(cmdPhase2, (uint)nTilesX, (uint)nTilesY, 1);
+
+        // Submit phase 2
+        _ctx.EndSingleTimeCommands(cmdPhase2);
+    }
+
+    /// <summary>
+    /// Adds a compute shader memory barrier to ensure writes complete before reads.
+    /// </summary>
+    private void AddComputeBarrier(CommandBuffer cmd)
+    {
+        var memoryBarrier = new MemoryBarrier
+        {
+            SType = StructureType.MemoryBarrier,
+            SrcAccessMask = AccessFlags.ShaderWriteBit,
+            DstAccessMask = AccessFlags.ShaderReadBit
+        };
+
+        _ctx.Vk.CmdPipelineBarrier(
+            cmd,
+            PipelineStageFlags.ComputeShaderBit,
+            PipelineStageFlags.ComputeShaderBit,
+            0,
+            1, &memoryBarrier,
+            0, null,
+            0, null);
     }
 
     /// <summary>
@@ -468,6 +575,90 @@ public unsafe class FrequencyMergePipeline
         _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _kernelArtifactsTileBorder.PipelineLayout, 0, 1, &set, 0, null);
 
         _kernelArtifactsTileBorder.Dispatch(cmd, (uint)nTilesX, (uint)nTilesY, 1);
+        _ctx.EndSingleTimeCommands(cmd);
+    }
+
+    /// <summary>
+    /// OPTIMIZED: Executes deconvolution, backward FFT, and artifact reduction in a single batched command buffer.
+    /// Reduces sync points from 3 to 1.
+    /// </summary>
+    public void ExecutePostProcessingBatched(
+        VulkanImage finalTextureFt,
+        VulkanImage mismatchTexture,
+        VulkanImage outputSpatial,
+        VulkanImage refTextureForArtifacts,
+        int nTilesX,
+        int nTilesY,
+        int tileSize,
+        int numTextures,
+        int[] blackLevel,
+        bool skipReduceArtifacts = false)
+    {
+        EnsureKernels();
+
+        // Create param buffer with all needed values
+        var freqParams = new FrequencyParams
+        {
+            TileSize = tileSize,
+            NumTextures = numTextures,
+            BlackLevelMean = (blackLevel[0] + blackLevel[1] + blackLevel[2] + blackLevel[3]) / 4.0f,
+            BlackLevel0 = blackLevel[0],
+            BlackLevel1 = blackLevel[1],
+            BlackLevel2 = blackLevel[2],
+            BlackLevel3 = blackLevel[3]
+        };
+        using var paramBuffer = new VulkanBuffer(_ctx, (ulong)Marshal.SizeOf<FrequencyParams>(),
+            BufferUsageFlags.UniformBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
+        paramBuffer.SetData([freqParams]);
+
+        var cmd = _ctx.BeginSingleTimeCommands();
+
+        // Layout transitions
+        finalTextureFt.TransitionLayout(ImageLayout.General, cmd);
+        mismatchTexture.TransitionLayout(ImageLayout.General, cmd);
+        outputSpatial.TransitionLayout(ImageLayout.General, cmd);
+
+        // Pre-allocate descriptor sets
+        var setDeconvolute = _descriptors.Allocate(_frequencyLayout);
+        var setBackwardFft = _descriptors.Allocate(_frequencyLayout);
+
+        // Deconvolute
+        _descriptors.UpdateBuffer(setDeconvolute, ShaderBindings.FrequencyDomain.Params, paramBuffer.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
+        _descriptors.UpdateImage(setDeconvolute, ShaderBindings.FrequencyDomain.RefTexture, mismatchTexture.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(setDeconvolute, ShaderBindings.FrequencyDomain.OutputTexture, finalTextureFt.View, ImageLayout.General, DescriptorType.StorageImage);
+
+        _kernelDeconvoluteFrequency!.BindPipeline(cmd);
+        _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _kernelDeconvoluteFrequency.PipelineLayout, 0, 1, &setDeconvolute, 0, null);
+        _kernelDeconvoluteFrequency.Dispatch(cmd, (uint)nTilesX, (uint)nTilesY, 1);
+
+        // Barrier: Deconvolute -> BackwardFFT
+        AddComputeBarrier(cmd);
+
+        // Backward FFT
+        _descriptors.UpdateBuffer(setBackwardFft, ShaderBindings.FrequencyDomain.Params, paramBuffer.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
+        _descriptors.UpdateImage(setBackwardFft, ShaderBindings.FrequencyDomain.RefTexture, finalTextureFt.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(setBackwardFft, ShaderBindings.FrequencyDomain.OutputTexture, outputSpatial.View, ImageLayout.General, DescriptorType.StorageImage);
+
+        _kernelBackwardFft!.BindPipeline(cmd);
+        _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _kernelBackwardFft.PipelineLayout, 0, 1, &setBackwardFft, 0, null);
+        _kernelBackwardFft.Dispatch(cmd, (uint)nTilesX, (uint)nTilesY, 1);
+
+        // Barrier: BackwardFFT -> ReduceArtifacts
+        AddComputeBarrier(cmd);
+
+        // Reduce artifacts (unless skipped)
+        if (!skipReduceArtifacts)
+        {
+            var setArtifacts = _descriptors.Allocate(_frequencyLayout);
+            _descriptors.UpdateBuffer(setArtifacts, ShaderBindings.FrequencyDomain.Params, paramBuffer.Handle, (ulong)Marshal.SizeOf<FrequencyParams>(), DescriptorType.UniformBuffer);
+            _descriptors.UpdateImage(setArtifacts, ShaderBindings.FrequencyDomain.RefTexture, refTextureForArtifacts.View, ImageLayout.General, DescriptorType.SampledImage);
+            _descriptors.UpdateImage(setArtifacts, ShaderBindings.FrequencyDomain.OutputTexture, outputSpatial.View, ImageLayout.General, DescriptorType.StorageImage);
+
+            _kernelArtifactsTileBorder!.BindPipeline(cmd);
+            _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _kernelArtifactsTileBorder.PipelineLayout, 0, 1, &setArtifacts, 0, null);
+            _kernelArtifactsTileBorder.Dispatch(cmd, (uint)nTilesX, (uint)nTilesY, 1);
+        }
+
         _ctx.EndSingleTimeCommands(cmd);
     }
 

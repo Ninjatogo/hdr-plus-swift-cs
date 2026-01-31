@@ -1,6 +1,5 @@
 using BurstPhoto.Rendering;
 using BurstPhoto.Rendering.Pipelines;
-using Xunit.Abstractions;
 
 namespace BurstPhoto.Tests.TestHelpers;
 

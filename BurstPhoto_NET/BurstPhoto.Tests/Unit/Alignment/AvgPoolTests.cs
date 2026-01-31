@@ -3,7 +3,6 @@ using BurstPhoto.Rendering;
 using BurstPhoto.Rendering.Pipelines;
 using BurstPhoto.Tests.TestHelpers;
 using Silk.NET.Vulkan;
-using Xunit.Abstractions;
 
 namespace BurstPhoto.Tests.Unit.Alignment;
 
@@ -43,10 +42,10 @@ public class AvgPoolTests : IClassFixture<GpuCollectionFixture>
         };
     }
 
-    [SkippableFact]
+    [Fact]
     public void AvgPool_ReducesDimensions()
     {
-        Skip.IfNot(_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
+        Assert.SkipWhen(!_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
 
         _output.WriteLine($"GPU: {_fixture.GetGpuName()}");
 
@@ -77,10 +76,10 @@ public class AvgPoolTests : IClassFixture<GpuCollectionFixture>
         _output.WriteLine($"Output: {output.Width}x{output.Height}");
     }
 
-    [SkippableFact]
+    [Fact]
     public void AvgPool_PreservesMean()
     {
-        Skip.IfNot(_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
+        Assert.SkipWhen(!_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
 
         _output.WriteLine($"GPU: {_fixture.GetGpuName()}");
 
@@ -120,10 +119,10 @@ public class AvgPoolTests : IClassFixture<GpuCollectionFixture>
             $"Mean changed from {inputMean:F2} to {outputMean:F2}, diff {Math.Abs(inputMean - outputMean):F2} > tolerance {tolerance:F2}");
     }
 
-    [SkippableFact]
+    [Fact]
     public void AvgPool_ReducesVariance()
     {
-        Skip.IfNot(_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
+        Assert.SkipWhen(!_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
 
         _output.WriteLine($"GPU: {_fixture.GetGpuName()}");
 
@@ -162,10 +161,10 @@ public class AvgPoolTests : IClassFixture<GpuCollectionFixture>
             $"Variance did not decrease: {outputVariance:G6} >= {inputVariance:G6}");
     }
 
-    [SkippableFact]
+    [Fact]
     public void AvgPool_UniformInput_StaysUniform()
     {
-        Skip.IfNot(_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
+        Assert.SkipWhen(!_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
 
         _output.WriteLine($"GPU: {_fixture.GetGpuName()}");
 
@@ -205,10 +204,10 @@ public class AvgPoolTests : IClassFixture<GpuCollectionFixture>
             $"Uniform input should have near-zero variance, got {outputVariance:G6}");
     }
 
-    [SkippableFact]
+    [Fact]
     public void AvgPool_OutputNotAllZeros()
     {
-        Skip.IfNot(_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
+        Assert.SkipWhen(!_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
 
         _output.WriteLine($"GPU: {_fixture.GetGpuName()}");
 
@@ -234,13 +233,13 @@ public class AvgPoolTests : IClassFixture<GpuCollectionFixture>
         TextureAssertions.AssertTextureNotAllZeros(output, "AvgPool output");
     }
 
-    [SkippableTheory]
+    [Theory]
     [InlineData(128, 128, 2)]
     [InlineData(256, 256, 2)]
     [InlineData(256, 256, 4)]
     public void AvgPool_VariousSizes_ProducesCorrectOutput(int inputWidth, int inputHeight, int scale)
     {
-        Skip.IfNot(_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
+        Assert.SkipWhen(!_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
 
         _output.WriteLine($"GPU: {_fixture.GetGpuName()}");
         _output.WriteLine($"Testing: {inputWidth}x{inputHeight}, scale={scale}");
@@ -279,10 +278,10 @@ public class AvgPoolTests : IClassFixture<GpuCollectionFixture>
             $"Mean changed too much: {inputMean:F2} -> {outputMean:F2}");
     }
 
-    [SkippableFact]
+    [Fact]
     public void AvgPool_GradientInput_PreservesGradientDirection()
     {
-        Skip.IfNot(_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
+        Assert.SkipWhen(!_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
 
         _output.WriteLine($"GPU: {_fixture.GetGpuName()}");
 

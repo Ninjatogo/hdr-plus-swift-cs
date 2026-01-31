@@ -3,7 +3,6 @@ using BurstPhoto.Rendering.Pipelines;
 using BurstPhoto.Rendering.Validation;
 using BurstPhoto.Tests.TestHelpers;
 using Silk.NET.Vulkan;
-using Xunit.Abstractions;
 
 namespace BurstPhoto.Tests.Unit.FFT;
 
@@ -28,11 +27,11 @@ public class FftRoundTripTests : IClassFixture<GpuCollectionFixture>
         _output = output;
     }
 
-    [SkippableFact]
+    [Fact]
     public void ForwardThenBackward_ReturnsOriginalData()
     {
-        Skip.IfNot(_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
-        Skip.IfNot(_fixture.SupportsFrequencyDomain, "GPU does not support StorageImageWriteWithoutFormat");
+        Assert.SkipWhen(!_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
+        Assert.SkipWhen(!_fixture.SupportsFrequencyDomain, "GPU does not support StorageImageWriteWithoutFormat");
 
         _output.WriteLine($"GPU: {_fixture.GetGpuName()}");
 
@@ -63,11 +62,11 @@ public class FftRoundTripTests : IClassFixture<GpuCollectionFixture>
             $"FFT round-trip failed: {roundTripResult.FailureReason}");
     }
 
-    [SkippableFact]
+    [Fact]
     public void ForwardFft_ParsevalsTheorem_EnergyPreserved()
     {
-        Skip.IfNot(_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
-        Skip.IfNot(_fixture.SupportsFrequencyDomain, "GPU does not support StorageImageWriteWithoutFormat");
+        Assert.SkipWhen(!_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
+        Assert.SkipWhen(!_fixture.SupportsFrequencyDomain, "GPU does not support StorageImageWriteWithoutFormat");
 
         _output.WriteLine($"GPU: {_fixture.GetGpuName()}");
 
@@ -95,11 +94,11 @@ public class FftRoundTripTests : IClassFixture<GpuCollectionFixture>
         }
     }
 
-    [SkippableFact]
+    [Fact]
     public void ForwardFft_WindowFunction_MatchesHann()
     {
-        Skip.IfNot(_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
-        Skip.IfNot(_fixture.SupportsFrequencyDomain, "GPU does not support StorageImageWriteWithoutFormat");
+        Assert.SkipWhen(!_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
+        Assert.SkipWhen(!_fixture.SupportsFrequencyDomain, "GPU does not support StorageImageWriteWithoutFormat");
 
         _output.WriteLine($"GPU: {_fixture.GetGpuName()}");
 
@@ -129,14 +128,14 @@ public class FftRoundTripTests : IClassFixture<GpuCollectionFixture>
         }
     }
 
-    [SkippableTheory]
+    [Theory]
     [InlineData(32, 32)]
     [InlineData(64, 64)]
     [InlineData(128, 128)]
     public void ForwardThenBackward_VariousSizes_ReturnsOriginalData(int width, int height)
     {
-        Skip.IfNot(_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
-        Skip.IfNot(_fixture.SupportsFrequencyDomain, "GPU does not support StorageImageWriteWithoutFormat");
+        Assert.SkipWhen(!_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
+        Assert.SkipWhen(!_fixture.SupportsFrequencyDomain, "GPU does not support StorageImageWriteWithoutFormat");
 
         _output.WriteLine($"GPU: {_fixture.GetGpuName()}");
         _output.WriteLine($"Testing size: {width}x{height}");
@@ -156,11 +155,11 @@ public class FftRoundTripTests : IClassFixture<GpuCollectionFixture>
             $"FFT round-trip failed for {width}x{height}: {roundTripResult.FailureReason}");
     }
 
-    [SkippableFact]
+    [Fact]
     public void ForwardFft_UniformInput_ProducesDcOnlyOutput()
     {
-        Skip.IfNot(_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
-        Skip.IfNot(_fixture.SupportsFrequencyDomain, "GPU does not support StorageImageWriteWithoutFormat");
+        Assert.SkipWhen(!_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
+        Assert.SkipWhen(!_fixture.SupportsFrequencyDomain, "GPU does not support StorageImageWriteWithoutFormat");
 
         _output.WriteLine($"GPU: {_fixture.GetGpuName()}");
 
@@ -192,15 +191,15 @@ public class FftRoundTripTests : IClassFixture<GpuCollectionFixture>
         Assert.True(ftStats.TotalEnergy > 0, "FFT output should have non-zero energy");
     }
 
-    [SkippableTheory]
+    [Theory]
     [InlineData(TestPattern.HorizontalGradient)]
     [InlineData(TestPattern.VerticalGradient)]
     [InlineData(TestPattern.SineWave)]
     [InlineData(TestPattern.Checkerboard)]
     public void ForwardThenBackward_VariousPatterns_ReturnsOriginalData(TestPattern pattern)
     {
-        Skip.IfNot(_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
-        Skip.IfNot(_fixture.SupportsFrequencyDomain, "GPU does not support StorageImageWriteWithoutFormat");
+        Assert.SkipWhen(!_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
+        Assert.SkipWhen(!_fixture.SupportsFrequencyDomain, "GPU does not support StorageImageWriteWithoutFormat");
 
         _output.WriteLine($"GPU: {_fixture.GetGpuName()}");
         _output.WriteLine($"Testing pattern: {pattern}");
@@ -223,11 +222,11 @@ public class FftRoundTripTests : IClassFixture<GpuCollectionFixture>
             $"FFT round-trip failed for pattern {pattern}: {roundTripResult.FailureReason}");
     }
 
-    [SkippableFact]
+    [Fact]
     public void ForwardFft_OutputHasCorrectDimensions()
     {
-        Skip.IfNot(_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
-        Skip.IfNot(_fixture.SupportsFrequencyDomain, "GPU does not support StorageImageWriteWithoutFormat");
+        Assert.SkipWhen(!_fixture.IsGpuAvailable, $"GPU not available: {_fixture.GpuError}");
+        Assert.SkipWhen(!_fixture.SupportsFrequencyDomain, "GPU does not support StorageImageWriteWithoutFormat");
 
         // Arrange
         const int width = 64;

@@ -25,6 +25,7 @@ public unsafe class SpatialMergePipeline
     private ComputeKernel? _kernelAddWeightOnly;
     private ComputeKernel? _kernelAddExposure;
     private ComputeKernel? _kernelAddHighlights;
+    private ComputeKernel? _kernelDivideTextures;
 
     public SpatialMergePipeline(VulkanContext ctx, VulkanDescriptorManager descriptors, VulkanKernelManager kernelManager)
     {
@@ -47,6 +48,7 @@ public unsafe class SpatialMergePipeline
         _kernelAddWeightOnly = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.AddWeightOnly, _accumLayout);
         _kernelAddExposure = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.AddExposure, _accumLayout);
         _kernelAddHighlights = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.AddHighlights, _accumHighLayout);
+        _kernelDivideTextures = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.DivideTextures, _accumLayout);
     }
 
     /// <summary>
@@ -272,5 +274,42 @@ public unsafe class SpatialMergePipeline
         _ctx.Vk.QueueSubmit(_ctx.ComputeQueue, 1, in submitInfo, default);
         _ctx.Vk.QueueWaitIdle(_ctx.ComputeQueue);
         _ctx.Vk.FreeCommandBuffers(_ctx.Device, _ctx.CommandPool, 1, in cmdBuffer);
+    }
+
+    /// <summary>
+    /// GPU-based normalization: output = pixelAccum / weightAccum.
+    /// This replaces the CPU-based loop that downloads both textures, divides, and re-uploads.
+    /// Eliminates two GetData() calls and improves performance.
+    /// </summary>
+    /// <param name="pixelAccum">Pixel accumulator texture</param>
+    /// <param name="weightAccum">Weight accumulator texture</param>
+    /// <param name="output">Output texture for normalized result</param>
+    public void NormalizeAccumulators(VulkanImage pixelAccum, VulkanImage weightAccum, VulkanImage output)
+    {
+        EnsureKernels();
+
+        var cmd = _ctx.BeginSingleTimeCommands();
+
+        pixelAccum.TransitionLayout(ImageLayout.General, cmd);
+        weightAccum.TransitionLayout(ImageLayout.General, cmd);
+        output.TransitionLayout(ImageLayout.General, cmd);
+
+        // Create a dummy param buffer (divide_textures doesn't need params, but layout requires binding 0)
+        var dummyParams = new TextureParams();
+        using var paramBuffer = new VulkanBuffer(_ctx, (ulong)Marshal.SizeOf<TextureParams>(),
+            BufferUsageFlags.UniformBufferBit, MemoryPropertyFlags.HostVisibleBit);
+        paramBuffer.SetData([dummyParams]);
+
+        var set = _descriptors.Allocate(_accumLayout);
+        _descriptors.UpdateBuffer(set, 0, paramBuffer.Handle, (ulong)Marshal.SizeOf<TextureParams>(), DescriptorType.UniformBuffer);
+        _descriptors.UpdateImage(set, 1, pixelAccum.View, ImageLayout.General, DescriptorType.SampledImage);  // t0 = InTextureFloat
+        _descriptors.UpdateImage(set, 4, weightAccum.View, ImageLayout.General, DescriptorType.SampledImage); // t3 = AuxTextureFloat
+        _descriptors.UpdateImage(set, 10, output.View, ImageLayout.General, DescriptorType.StorageImage);     // u10 = OutTextureFloat
+
+        _kernelDivideTextures!.BindPipeline(cmd);
+        _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, _kernelDivideTextures.PipelineLayout, 0, 1, &set, 0, null);
+        _kernelDivideTextures.Dispatch(cmd, output.Width, output.Height, 1);
+
+        _ctx.EndSingleTimeCommands(cmd);
     }
 }

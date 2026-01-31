@@ -280,7 +280,10 @@ public class DenoisePipeline : IDenoisePipeline
             NoiseReduction = options.NoiseReduction,
             ExposureControl = options.ExposureControl,
             OutputBitDepth = options.OutputBitDepth,
-            EnableDebugDump = options.EnableDebugDump
+            EnableDebugDump = options.EnableDebugDump,
+            EnableFftValidation = options.EnableFftValidation,
+            SkipReduceArtifacts = options.SkipReduceArtifacts,
+            EnableProfiling = options.EnableProfiling
         };
 
         // Non-Bayer sensors have restrictions

@@ -79,6 +79,7 @@ public static class PipelineKernelSpecs
         new() { Binding = 3, DescriptorType = DescriptorType.SampledImage, DescriptorCount = 1, StageFlags = ShaderStageFlags.ComputeBit },   // t3 AuxTexture0 (RMS)
         new() { Binding = 4, DescriptorType = DescriptorType.SampledImage, DescriptorCount = 1, StageFlags = ShaderStageFlags.ComputeBit },   // t4 AuxTexture1 (Mismatch)
         new() { Binding = 5, DescriptorType = DescriptorType.SampledImage, DescriptorCount = 1, StageFlags = ShaderStageFlags.ComputeBit },   // t5 AuxTexture2 (Highlights)
+        new() { Binding = 11, DescriptorType = DescriptorType.StorageBuffer, DescriptorCount = 1, StageFlags = ShaderStageFlags.ComputeBit },  // u11 ReductionBuffer (for mean calculation)
         new() { Binding = 10, DescriptorType = DescriptorType.StorageImage, DescriptorCount = 1, StageFlags = ShaderStageFlags.ComputeBit }   // u10 OutputTexture
     ]);
 
@@ -240,6 +241,12 @@ public static class PipelineKernelSpecs
         "accumulate_cropped_region"
     );
 
+    public static KernelSpec DivideTextures => new(
+        "divide_textures",
+        Path.Combine(ShadersDir, "TextureOps.hlsl"),
+        "divide_textures"
+    );
+
     // Frequency Domain Pipeline (modular shaders)
     public static KernelSpec AbsDiff => new(
         "calculate_abs_diff_rgba",
@@ -307,6 +314,29 @@ public static class PipelineKernelSpecs
     public static KernelSpec DeconvoluteFrequency => new(
         "deconvolute_frequency_domain",
         Path.Combine(FrequencyDir, "deconvolute_frequency_domain.hlsl"),
+        "CSMain",
+        UseModularShader: true
+    );
+
+    public static KernelSpec ReduceMeanColumns => new(
+        "reduce_mean_columns",
+        Path.Combine(FrequencyDir, "reduce_mean_rgba.hlsl"),
+        "reduce_mean_columns",
+        256, 1, 1,
+        UseModularShader: true
+    );
+
+    public static KernelSpec ReduceMeanFinal => new(
+        "reduce_mean_final",
+        Path.Combine(FrequencyDir, "reduce_mean_rgba.hlsl"),
+        "reduce_mean_final",
+        256, 1, 1,
+        UseModularShader: true
+    );
+
+    public static KernelSpec AccumulateMismatchRgba => new(
+        "accumulate_mismatch_rgba",
+        Path.Combine(FrequencyDir, "accumulate_mismatch_rgba.hlsl"),
         "CSMain",
         UseModularShader: true
     );
