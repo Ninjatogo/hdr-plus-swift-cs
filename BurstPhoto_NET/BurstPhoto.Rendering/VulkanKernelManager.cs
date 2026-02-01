@@ -138,18 +138,33 @@ public class VulkanKernelManager : IDisposable
     /// </summary>
     public void ClearSourceCache() => _shaderSourceCache.Clear();
 
-    public void Dispose()
+    public unsafe void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
 
+        // Dispose all cached kernels
         foreach (var kernel in _kernelCache.Values)
         {
             kernel.Dispose();
         }
         _kernelCache.Clear();
+
+        // Destroy all cached layouts
+        foreach (var layout in _layoutCache.Values)
+        {
+            if (layout.Handle != 0)
+            {
+                _ctx.Vk.DestroyDescriptorSetLayout(_ctx.Device, layout, null);
+            }
+        }
         _layoutCache.Clear();
+
+        // Clear shader source cache
         _shaderSourceCache.Clear();
+
+        // Dispose compiler
+        _compiler.Dispose();
 
         GC.SuppressFinalize(this);
     }

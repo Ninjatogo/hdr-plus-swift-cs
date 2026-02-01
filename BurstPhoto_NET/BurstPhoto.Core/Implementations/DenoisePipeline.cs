@@ -15,6 +15,7 @@ public class DenoisePipeline : IDenoisePipeline
     private readonly IRawImageLoader _loader;
     private readonly IRawImageWriter _writer;
     private readonly IComputePipeline _compute;
+    private bool _disposed;
 
     // Cache for skipping repeated processing with same settings
     private string _lastSettingsHash = string.Empty;
@@ -42,10 +43,11 @@ public class DenoisePipeline : IDenoisePipeline
 
         // Load all images in parallel
         Console.WriteLine("Loading images...");
+        progress.Update(0, "Loading images...");
         var images = await LoadImagesParallelAsync(imagePaths, cancellationToken);
         Console.WriteLine($"Time to load all images: {stopwatch.Elapsed.TotalSeconds:F3}s");
 
-        progress.ProgressInt += 20_000_000;
+        progress.Update(10_000_000, "Analyzing images...");
 
         // Check resolution consistency
         ValidateResolutions(images);
@@ -72,7 +74,7 @@ public class DenoisePipeline : IDenoisePipeline
         var tileSize = ProcessingOptions.GetTileSizePixels(effectiveOptions.TileSize);
         var searchDist = ProcessingOptions.GetSearchDistancePixels(effectiveOptions.SearchDistance);
         var tileInfo = TileInfo.Calculate(refImage.Width, refImage.Height, tileSize, searchDist);
-        Console.WriteLine($"Tile grid: {tileInfo.NTilesX}x{tileInfo.NTilesY}, search positions: {tileInfo.NPos2D}");
+        Console.WriteLine($"Tile grid: {tileInfo.TileCountX}x{tileInfo.TileCountY}, search positions: {tileInfo.TotalSearchPositions}");
 
         // Check cache
         var settingsHash = GenerateSettingsHash(imagePaths, effectiveOptions);
@@ -82,36 +84,47 @@ public class DenoisePipeline : IDenoisePipeline
         {
             Console.WriteLine("Using cached result (settings unchanged).");
             result = _lastResult;
-            progress.ProgressInt += 80_000_000;
+            progress.Update(80_000_000, "Using cached result...");
         }
         else
         {
+            // Clear any previous cached result to free memory
+            _lastResult = null;
+            _lastSettingsHash = string.Empty;
+
             // Process images through compute pipeline
-            // For Phase 2, we do a simple passthrough - actual compute comes in Phase 3
             Console.WriteLine("Processing images...");
+            progress.Update(15_000_000, "Aligning frames...");
+
             var renderingInput = new RenderingInput
             {
                 Images = images,
                 ReferenceFrameIndex = refIdx
             };
-            result = await _compute.ProcessAsync(renderingInput, effectiveOptions, progress);
-            
-            // Cache result
+            result = await _compute.ProcessAsync(renderingInput, effectiveOptions, progress, cancellationToken);
+
+            // Note: Caching is disabled for GUI usage where a new pipeline is created each time.
+            // For CLI usage with a singleton pipeline, caching provides benefit for repeated runs.
+            // The cache will be cleared when Dispose() is called.
             _lastResult = result;
             _lastSettingsHash = settingsHash;
-            progress.ProgressInt += 80_000_000;
         }
+
+        // Clear references to input images to allow GC to reclaim memory sooner
+        // The images list goes out of scope after this method returns, but clearing
+        // the RenderingInput reference helps ensure no lingering references exist.
 
         // Generate output filename
         var outputPath = GenerateOutputPath(refImage.SourcePath, outputDirectory, effectiveOptions, images.Count);
 
         // Write output
+        progress.Update(90_000_000, "Writing output file...");
         Console.WriteLine($"Writing output to: {outputPath}");
         if (result == null) throw new InvalidOperationException("Compute pipeline result is null!");
         Console.WriteLine($"Result image: {result.Width}x{result.Height}, Data len: {result.Data.Length}");
-        
+
         await _writer.WriteAsync(result, outputPath);
-        progress.ProgressInt += 10_000_000;
+        progress.Update(100_000_000, "Complete");
 
         Console.WriteLine($"Total processing time for {images.Count} images: {stopwatch.Elapsed.TotalSeconds:F3}s");
 
@@ -197,7 +210,7 @@ public class DenoisePipeline : IDenoisePipeline
         IReadOnlyList<RawImage> images)
     {
         var exposureBias = images.Select(img => img.ExposureBias).ToArray();
-        var isoExposureTime = images.Select(img => (double)img.IsoExposureTime).ToArray();
+        var isoExposureTime = images.Select(img => (double)img.IsoSpeedExposureTimeProduct).ToArray();
 
         // Check if exposure bias is uniform
         var uniformExposure = exposureBias.All(e => e == exposureBias[0]);
@@ -291,7 +304,7 @@ public class DenoisePipeline : IDenoisePipeline
         {
             if (result.Merging == MergingAlgorithm.HigherQuality)
             {
-                progress.ShowNonBayerHqAlert = true;
+                progress.ShowNonBayerHighQualityAlert = true;
                 result.Merging = MergingAlgorithm.Fast;
             }
 
@@ -361,5 +374,28 @@ public class DenoisePipeline : IDenoisePipeline
 
         var outputName = baseName + suffix + ".dng";
         return Path.Combine(outputDirectory, outputName);
+    }
+
+    /// <summary>
+    /// Clears any cached results to free memory.
+    /// </summary>
+    public void ClearCache()
+    {
+        _lastResult = null;
+        _lastSettingsHash = string.Empty;
+    }
+
+    /// <summary>
+    /// Disposes of resources used by the pipeline.
+    /// </summary>
+    public void Dispose()
+    {
+        if (_disposed) return;
+
+        ClearCache();
+        _compute.Dispose();
+        _disposed = true;
+
+        GC.SuppressFinalize(this);
     }
 }

@@ -303,9 +303,9 @@ public unsafe class ExposurePipeline(
 
         // 2. Prepare Params
         var colorMean = 1.0f;
-        if (metadata.ColorFactors.Length >= 3)
+        if (metadata.ColorChannelMultipliers.Length >= 3)
         {
-            colorMean = (float)((metadata.ColorFactors[0] + metadata.ColorFactors[1] + metadata.ColorFactors[2]) / 3.0);
+            colorMean = (float)((metadata.ColorChannelMultipliers[0] + metadata.ColorChannelMultipliers[1] + metadata.ColorChannelMultipliers[2]) / 3.0);
         }
 
         var blArray = new float[4];
@@ -313,7 +313,7 @@ public unsafe class ExposurePipeline(
         var blMin = float.MaxValue;
         for (var i = 0; i < 4; i++)
         {
-            var v = (i < metadata.BlackLevel.Length) ? metadata.BlackLevel[i] : (float)metadata.BlackLevel[0];
+            var v = (i < metadata.BlackLevels.Length) ? metadata.BlackLevels[i] : (float)metadata.BlackLevels[0];
             blArray[i] = v;
             blMean += v;
             if (v < blMin) blMin = v;

@@ -11,6 +11,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BurstPhoto.CLI", "BurstPhot
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BurstPhoto.Tests", "BurstPhoto.Tests\BurstPhoto.Tests.csproj", "{BE8669B6-6CBA-44E6-BBE8-76451FCA8693}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BurstPhoto.GUI", "BurstPhoto.GUI\BurstPhoto.GUI.csproj", "{D22EE627-0D03-40C8-BD00-CAABBEE2C4FB}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -69,6 +71,18 @@ Global
 		{BE8669B6-6CBA-44E6-BBE8-76451FCA8693}.Release|x64.Build.0 = Release|Any CPU
 		{BE8669B6-6CBA-44E6-BBE8-76451FCA8693}.Release|x86.ActiveCfg = Release|Any CPU
 		{BE8669B6-6CBA-44E6-BBE8-76451FCA8693}.Release|x86.Build.0 = Release|Any CPU
+		{D22EE627-0D03-40C8-BD00-CAABBEE2C4FB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D22EE627-0D03-40C8-BD00-CAABBEE2C4FB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D22EE627-0D03-40C8-BD00-CAABBEE2C4FB}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D22EE627-0D03-40C8-BD00-CAABBEE2C4FB}.Debug|x64.Build.0 = Debug|Any CPU
+		{D22EE627-0D03-40C8-BD00-CAABBEE2C4FB}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{D22EE627-0D03-40C8-BD00-CAABBEE2C4FB}.Debug|x86.Build.0 = Debug|Any CPU
+		{D22EE627-0D03-40C8-BD00-CAABBEE2C4FB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D22EE627-0D03-40C8-BD00-CAABBEE2C4FB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D22EE627-0D03-40C8-BD00-CAABBEE2C4FB}.Release|x64.ActiveCfg = Release|Any CPU
+		{D22EE627-0D03-40C8-BD00-CAABBEE2C4FB}.Release|x64.Build.0 = Release|Any CPU
+		{D22EE627-0D03-40C8-BD00-CAABBEE2C4FB}.Release|x86.ActiveCfg = Release|Any CPU
+		{D22EE627-0D03-40C8-BD00-CAABBEE2C4FB}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -64,12 +64,14 @@ public class DngSdkWriter : IRawImageWriter, IDisposable
         }
     }
 
-    public Task WriteAsync(RawImage image, string path)
+    /// <inheritdoc />
+    public Task WriteAsync(RawImage image, string outputPath)
     {
-        return Task.Run(() => Write(path, image));
+        return Task.Run(() => Write(image, outputPath));
     }
 
-    public void Write(string path, RawImage image)
+    /// <inheritdoc />
+    public void Write(RawImage image, string outputPath)
     {
         EnsureInitialized();
         if (string.IsNullOrEmpty(image.SourcePath))
@@ -85,43 +87,43 @@ public class DngSdkWriter : IRawImageWriter, IDisposable
                 $"Source DNG file not found: {image.SourcePath}", image.SourcePath);
         }
 
-        Console.WriteLine($"[DngSdkWriter] Writing DNG: {path}");
+        Console.WriteLine($"[DngSdkWriter] Writing DNG: {outputPath}");
         Console.WriteLine($"  Source: {image.SourcePath}");
         Console.WriteLine($"  Dimensions: {image.Width}x{image.Height}");
         Console.WriteLine($"  WhiteLevel: {image.WhiteLevel}");
 
         // Pin the pixel data and pass to native code
-        GCHandle handle = default;
+        GCHandle pinnedHandle = default;
         try
         {
-            // Get raw bytes from ushort array
+            // Convert ushort array to byte array for native interop
             var pixelBytes = new byte[image.Data.Length * sizeof(ushort)];
             Buffer.BlockCopy(image.Data, 0, pixelBytes, 0, pixelBytes.Length);
 
-            handle = GCHandle.Alloc(pixelBytes, GCHandleType.Pinned);
-            var pixelPtr = handle.AddrOfPinnedObject();
+            pinnedHandle = GCHandle.Alloc(pixelBytes, GCHandleType.Pinned);
+            var pixelDataPointer = pinnedHandle.AddrOfPinnedObject();
 
             var result = write_dng_to_disk(
                 image.SourcePath,
-                path,
-                pixelPtr,
+                outputPath,
+                pixelDataPointer,
                 image.Width,
                 image.Height,
                 image.WhiteLevel);
 
             if (result != 0)
             {
-                var errorMsg = GetLastErrorMessage();
-                throw new IOException($"DNG SDK write failed (code {result}): {errorMsg}");
+                var lastErrorMessage = GetLastErrorMessage();
+                throw new IOException($"DNG SDK write failed (code {result}): {lastErrorMessage}");
             }
 
-            Console.WriteLine($"[DngSdkWriter] Successfully wrote: {path}");
+            Console.WriteLine($"[DngSdkWriter] Successfully wrote: {outputPath}");
         }
         finally
         {
-            if (handle.IsAllocated)
+            if (pinnedHandle.IsAllocated)
             {
-                handle.Free();
+                pinnedHandle.Free();
             }
         }
     }

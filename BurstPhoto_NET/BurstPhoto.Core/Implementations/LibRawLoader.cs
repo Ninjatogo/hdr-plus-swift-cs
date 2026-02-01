@@ -121,16 +121,16 @@ public class LibRawLoader : IRawImageLoader
                 Width = rawWidth,  // Use raw dimensions for Bayer data
                 Height = rawHeight,
                 WhiteLevel = whiteLevel,
-                // Prefer BlackLevel from DNG metadata (more reliable for some cameras like DJI)
+                // Prefer BlackLevels from DNG metadata (more reliable for some cameras like DJI)
                 // Fall back to LibRaw's value if DNG tag not available or empty
-                BlackLevel = dngMeta.BlackLevel.Length >= 4 
-                    ? dngMeta.BlackLevel 
-                    : (dngMeta.BlackLevel.Length > 0 
-                        ? Enumerable.Repeat(dngMeta.BlackLevel[0], 4).ToArray()
+                BlackLevels = dngMeta.BlackLevels.Length >= 4 
+                    ? dngMeta.BlackLevels 
+                    : (dngMeta.BlackLevels.Length > 0 
+                        ? Enumerable.Repeat(dngMeta.BlackLevels[0], 4).ToArray()
                         : blackLevel),
                 ExposureBias = dngMeta.ExposureBias,
-                IsoExposureTime = isoExposureTime,
-                ColorFactors = colorFactors,
+                IsoSpeedExposureTimeProduct = isoExposureTime,
+                ColorChannelMultipliers = colorFactors,
                 MosaicPatternWidth = isXTrans ? 6 : 2,
                 
                 // CFA pattern from LibRaw
@@ -315,13 +315,13 @@ public class LibRawLoader : IRawImageLoader
                         }
                     }
 
-                    // DNG Tag 50714 = BlackLevel (RATIONAL or LONG array)
-                    if (result.BlackLevel.Length == 0)
+                    // DNG Tag 50714 = BlackLevels (RATIONAL or LONG array)
+                    if (result.BlackLevels.Length == 0)
                     {
                         var blObj = directory.GetObject(50714);
                         if (blObj != null)
                         {
-                            result.BlackLevel = ExtractBlackLevelArray(blObj);
+                            result.BlackLevels = ExtractBlackLevelsArray(blObj);
                         }
                     }
                 }
@@ -368,13 +368,13 @@ public class LibRawLoader : IRawImageLoader
     }
 
     /// <summary>
-    /// Extracts BlackLevel array from DNG tag 50714 (can be RATIONAL, LONG, or SHORT).
+    /// Extracts BlackLevels array from DNG tag 50714 (can be RATIONAL, LONG, or SHORT).
     /// </summary>
-    private static int[] ExtractBlackLevelArray(object? obj)
+    private static int[] ExtractBlackLevelsArray(object? obj)
     {
         if (obj == null) return [];
 
-        // Handle RATIONAL array (most common for DNG BlackLevel)
+        // Handle RATIONAL array (most common for DNG BlackLevels)
         if (obj is Rational[] rationals)
         {
             return rationals.Select(r => r.Denominator != 0 ? (int)(r.Numerator / r.Denominator) : 0).ToArray();
@@ -436,7 +436,7 @@ public class LibRawLoader : IRawImageLoader
         public int CalibrationIlluminant1 { get; set; }
         public int CalibrationIlluminant2 { get; set; }
         public double[] AsShotNeutral { get; set; } = [];
-        public int[] BlackLevel { get; set; } = [];
+        public int[] BlackLevels { get; set; } = [];
     }
 
     /// <summary>

@@ -202,15 +202,15 @@ public unsafe class TextureConversionHelper
         paramBuffer.SetData([texParams]);
 
         var blackLevels = new float[4];
-        switch (rawInfo.BlackLevel.Length)
+        switch (rawInfo.BlackLevels.Length)
         {
             case >= 4:
                 for (var i = 0; i < 4; i++)
-                    blackLevels[i] = rawInfo.BlackLevel[i];
+                    blackLevels[i] = rawInfo.BlackLevels[i];
                 break;
             case > 0:
                 for (var i = 0; i < 4; i++)
-                    blackLevels[i] = rawInfo.BlackLevel[0];
+                    blackLevels[i] = rawInfo.BlackLevels[0];
                 break;
         }
 

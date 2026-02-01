@@ -8,8 +8,56 @@ using Silk.NET.Vulkan;
 
 namespace BurstPhoto.Rendering.Implementations;
 
+/// <summary>
+/// GPU-accelerated compute pipeline for HDR+ burst photo processing using Vulkan.
+/// </summary>
+/// <remarks>
+/// This pipeline implements two merging algorithms:
+/// <list type="bullet">
+///   <item><description><strong>Spatial (Fast)</strong>: Weighted pixel averaging in the spatial domain</description></item>
+///   <item><description><strong>Frequency (HigherQuality)</strong>: FFT-based merging with 4 iterations for improved noise reduction</description></item>
+/// </list>
+/// The pipeline performs the following stages:
+/// <list type="number">
+///   <item><description>Upload and prepare raw Bayer data</description></item>
+///   <item><description>Build alignment pyramids for coarse-to-fine motion estimation</description></item>
+///   <item><description>Align and warp comparison frames to the reference</description></item>
+///   <item><description>Merge aligned frames using the selected algorithm</description></item>
+///   <item><description>Apply optional exposure correction</description></item>
+///   <item><description>Convert back to 16-bit output</description></item>
+/// </list>
+/// </remarks>
 public unsafe class VulkanComputePipeline : IComputePipeline
 {
+    #region Constants
+
+    /// <summary>
+    /// Number of pyramid levels used for coarse-to-fine alignment.
+    /// Level 0 is half the prepared image size, with each subsequent level halved again.
+    /// </summary>
+    private const int PyramidLevelCount = 4;
+
+    /// <summary>
+    /// Number of iterations for frequency domain merging.
+    /// Each iteration uses a different tile offset pattern to reduce blocking artifacts.
+    /// </summary>
+    private const int FrequencyMergeIterationCount = 4;
+
+    /// <summary>
+    /// Tile size (in pixels) used for FFT-based frequency domain merging.
+    /// This is hardcoded to match the Swift implementation (tile_size_merge = 8).
+    /// </summary>
+    private const int FrequencyMergeTileSize = 8;
+
+    /// <summary>
+    /// Maximum pixel value for 16-bit output (2^16 - 1).
+    /// </summary>
+    private const int MaxPixelValue16Bit = 65535;
+
+    #endregion
+
+    #region Private Fields
+
     private readonly VulkanContext _ctx;
     private readonly VulkanShaderCompiler _compiler;
     private readonly VulkanDescriptorManager _descriptors;
@@ -53,20 +101,30 @@ public unsafe class VulkanComputePipeline : IComputePipeline
     // Frequency merge pipeline for FFT-based merging
     private readonly FrequencyMergePipeline _frequencyMergePipeline;
 
-    // FFT Validation: Set to true to run mathematical validation tests
-    public bool EnableFftValidation { get; set; }
+    /// <summary>
+    /// Stores FFT validation test results when <see cref="EnableFftValidation"/> is enabled.
+    /// </summary>
     private List<ValidationResult> _validationResults = [];
 
-    // Flag to track if pipelines are initialized
+    /// <summary>
+    /// Flag to track if shader pipelines have been initialized.
+    /// </summary>
     private bool _pipelinesInitialized;
 
+    #endregion
+
+    #region Constructor
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="VulkanComputePipeline"/> class.
+    /// </summary>
+    /// <param name="ctx">The Vulkan context providing device and command pool access.</param>
     public VulkanComputePipeline(VulkanContext ctx)
     {
         _ctx = ctx;
         _compiler = new VulkanShaderCompiler();
-        // Increase descriptor pool size for 4-iteration frequency domain merge
-        // Each iteration creates ~20-30 descriptor sets (pyramids, textures, etc.)
-        _descriptors = new VulkanDescriptorManager(_ctx, maxSets: 500);
+        // Start with a modest pool size - it will be dynamically resized based on workload
+        _descriptors = new VulkanDescriptorManager(_ctx, maxSets: 200);
         _kernelManager = new VulkanKernelManager(_ctx, _descriptors);
         _alignmentPipeline = new AlignmentPipeline(_ctx, _descriptors, _kernelManager);
         _exposurePipeline = new ExposurePipeline(_ctx, _descriptors, _kernelManager);
@@ -79,10 +137,28 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         _conversionHelper = new TextureConversionHelper(_ctx, _descriptors, _textureUtils);
     }
 
+    #endregion
+
+    #region Public Properties
+
     /// <summary>
-    /// Initializes all pipelines upfront. Call this once before processing to avoid
-    /// per-execution Ensure* overhead.
+    /// Gets or sets whether FFT mathematical validation tests should be run during processing.
     /// </summary>
+    /// <remarks>
+    /// When enabled, performs round-trip FFT validation on the first iteration to verify
+    /// that the FFT shaders are producing mathematically correct results. This is useful
+    /// for debugging but adds processing overhead.
+    /// </remarks>
+    public bool EnableFftValidation { get; set; }
+
+    #endregion
+
+    #region Pipeline Initialization
+
+    /// <summary>
+    /// Initializes all shader pipelines upfront to avoid per-execution overhead.
+    /// </summary>
+    /// <param name="isFrequencyMode">True if using frequency domain merging, which requires additional conversion pipelines.</param>
     private void InitializePipelines(bool isFrequencyMode)
     {
         if (_pipelinesInitialized) return;
@@ -97,7 +173,7 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         _pipelinesInitialized = true;
     }
 
-    public async Task<RawImage> ProcessAsync(RenderingInput input, ProcessingOptions options, ProcessingProgress progress)
+    public async Task<RawImage> ProcessAsync(RenderingInput input, ProcessingOptions options, ProcessingProgress progress, CancellationToken cancellationToken = default)
     {
         Console.WriteLine("[VulkanComputePipeline] Starting processing...");
 
@@ -105,6 +181,17 @@ public unsafe class VulkanComputePipeline : IComputePipeline
 
         // Initialize all pipelines upfront
         InitializePipelines(isFrequency);
+
+        // Calculate required pool size based on workload and ensure capacity
+        var requiredPoolSize = VulkanDescriptorManager.CalculateRequiredPoolSize(
+            input.Images.Count, isFrequency);
+        _descriptors.EnsureCapacity(requiredPoolSize);
+
+        // Reset descriptor pool to free any previously allocated descriptor sets
+        _descriptors.ResetPool();
+
+        // Check for cancellation before heavy processing
+        cancellationToken.ThrowIfCancellationRequested();
 
         // Enable debug dump if requested
         _debugHelper.Enabled = options.EnableDebugDump;
@@ -134,232 +221,258 @@ public unsafe class VulkanComputePipeline : IComputePipeline
             Console.WriteLine("[VulkanComputePipeline] FFT VALIDATION ENABLED - mathematical tests will be run on each stage");
         }
 
-        // 2. Setup Reference Frame
-        var refImage = input.Images[input.ReferenceFrameIndex];
-        var width = refImage.Width;
-        var height = refImage.Height;
+        // Setup Reference Frame
+        var referenceImage = input.Images[input.ReferenceFrameIndex];
+        var imageWidth = referenceImage.Width;
+        var imageHeight = referenceImage.Height;
 
         // Calculate Padded Dimensions for Alignment
-        var tileSize = ProcessingOptions.GetTileSizePixels(options.TileSize);
-        int pad;
-        int outWidth;
-        int outHeight;
+        // The padding ensures tiles align properly at image boundaries
+        var alignmentTileSize = ProcessingOptions.GetTileSizePixels(options.TileSize);
+        int paddingAmount;
+        int paddedWidth;
+        int paddedHeight;
 
         if (isFrequency)
         {
-            pad = 0;
-            // Ensure multiple of TileSize for FFT alignment
-            outWidth = ((width + tileSize - 1) / tileSize) * tileSize;
-            outHeight = ((height + tileSize - 1) / tileSize) * tileSize;
+            paddingAmount = 0;
+            // Ensure dimensions are multiples of tile size for FFT alignment
+            paddedWidth = ((imageWidth + alignmentTileSize - 1) / alignmentTileSize) * alignmentTileSize;
+            paddedHeight = ((imageHeight + alignmentTileSize - 1) / alignmentTileSize) * alignmentTileSize;
         }
         else
         {
-            // Spatial padding (Center alignment)
-            pad = tileSize / 2;
-            outWidth = width + tileSize;
-            outHeight = height + tileSize;
+            // Spatial mode: add half-tile padding on each side for centered alignment
+            paddingAmount = alignmentTileSize / 2;
+            paddedWidth = imageWidth + alignmentTileSize;
+            paddedHeight = imageHeight + alignmentTileSize;
 
-            if (outWidth % 2 != 0) outWidth++;
-            if (outHeight % 2 != 0) outHeight++;
+            // Ensure even dimensions for Bayer pattern compatibility
+            if (paddedWidth % 2 != 0) paddedWidth++;
+            if (paddedHeight % 2 != 0) paddedHeight++;
         }
 
-        Console.WriteLine($"[VulkanComputePipeline] Input: {width}x{height}, Padded: {outWidth}x{outHeight}, Mode: {options.Merging}");
+        Console.WriteLine($"[VulkanComputePipeline] Input: {imageWidth}x{imageHeight}, Padded: {paddedWidth}x{paddedHeight}, Mode: {options.Merging}");
 
-        // 3. Allocate Resources
-        using var rawTexture = new VulkanImage(_ctx, (uint)width, (uint)height, Format.R16Uint,
+        // Allocate GPU Resources
+        using var rawBayerTexture = new VulkanImage(_ctx, (uint)imageWidth, (uint)imageHeight, Format.R16Uint,
             ImageUsageFlags.TransferDstBit | ImageUsageFlags.SampledBit | ImageUsageFlags.StorageBit);
 
-        // Padded/Float Texture (Buffer for Processing)
-        using var preparedTexture = new VulkanImage(_ctx, (uint)outWidth, (uint)outHeight, Format.R32Sfloat,
+        // Padded float texture for processing (converts 16-bit Bayer to 32-bit float with padding)
+        using var preparedTexture = new VulkanImage(_ctx, (uint)paddedWidth, (uint)paddedHeight, Format.R32Sfloat,
             ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit | ImageUsageFlags.TransferDstBit);
 
-        // 4. Upload Reference Frame (once, before iteration loop)
+        // Upload Reference Frame (once, before iteration loop)
         Console.WriteLine("[VulkanComputePipeline] Uploading Reference Frame...");
         using (_profiler.MeasureStage("Upload"))
         {
-            rawTexture.SetData(refImage.Data);
+            rawBayerTexture.SetData(referenceImage.Data);
         }
 
-        // 5. Execute Prepare Pass
+        // Execute Prepare Pass - converts raw Bayer to padded float format
         Console.WriteLine("[VulkanComputePipeline] Executing Prepare Pass...");
         using (_profiler.MeasureStage("Prepare"))
         {
-            ExecutePrepare(rawTexture, preparedTexture, refImage, pad, pad);
+            ExecutePrepare(rawBayerTexture, preparedTexture, referenceImage, paddingAmount, paddingAmount);
         }
 
         // DEBUG: Dump after Prepare
-        _debugHelper.DumpTexture(preparedTexture, "step_1_prepare", refImage, outWidth, outHeight, pad);
+        _debugHelper.DumpTexture(preparedTexture, "step_1_prepare", referenceImage, paddedWidth, paddedHeight, paddingAmount);
 
-        progress.ProgressInt += 50_000_000;
+        progress.Update(20_000_000, "Building alignment pyramid...");
 
-        // 5b. Alignment Pyramid
+        // Build Alignment Pyramid for coarse-to-fine motion estimation
+        // Level 0 is half the prepared image size; each subsequent level is halved again
         Console.WriteLine("[VulkanComputePipeline] Generating Alignment Pyramid...");
         _profiler.BeginStage("BuildPyramid");
-        var pyramid = new List<VulkanImage>();
+        var referencePyramid = new List<VulkanImage>();
 
-        // Level 0: Downsampled from preparedTexture by 2
-        var l0W = (int)preparedTexture.Width / 2;
-        var l0H = (int)preparedTexture.Height / 2;
-        if (l0W % 2 != 0) l0W++;
-        if (l0H % 2 != 0) l0H++;
+        // Level 0: Downsampled from preparedTexture by factor of 2
+        var pyramidLevel0Width = (int)preparedTexture.Width / 2;
+        var pyramidLevel0Height = (int)preparedTexture.Height / 2;
+        // Ensure even dimensions for subsequent downsampling
+        if (pyramidLevel0Width % 2 != 0) pyramidLevel0Width++;
+        if (pyramidLevel0Height % 2 != 0) pyramidLevel0Height++;
 
-        var level0 = new VulkanImage(_ctx, (uint)l0W, (uint)l0H, Format.R32Sfloat,
+        var pyramidLevel0 = new VulkanImage(_ctx, (uint)pyramidLevel0Width, (uint)pyramidLevel0Height, Format.R32Sfloat,
             ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
-        ExecuteAvgPool(preparedTexture, level0, 2, refImage);
-        pyramid.Add(level0);
+        ExecuteAvgPool(preparedTexture, pyramidLevel0, scale: 2, referenceImage);
+        referencePyramid.Add(pyramidLevel0);
 
-        var currentW = l0W;
-        var currentH = l0H;
+        var currentPyramidWidth = pyramidLevel0Width;
+        var currentPyramidHeight = pyramidLevel0Height;
 
-        // Create 3 more levels
-        for (var i = 1; i < 4; i++)
+        // Create remaining pyramid levels (levels 1 through PyramidLevelCount-1)
+        for (var pyramidLevel = 1; pyramidLevel < PyramidLevelCount; pyramidLevel++)
         {
-            var nextW = currentW / 2;
-            if (nextW % 2 != 0) nextW++;
-            var nextH = currentH / 2;
-            if (nextH % 2 != 0) nextH++;
+            var nextLevelWidth = currentPyramidWidth / 2;
+            if (nextLevelWidth % 2 != 0) nextLevelWidth++;
+            var nextLevelHeight = currentPyramidHeight / 2;
+            if (nextLevelHeight % 2 != 0) nextLevelHeight++;
 
-            var levelImg = new VulkanImage(_ctx, (uint)nextW, (uint)nextH, Format.R32Sfloat,
+            var pyramidLevelImage = new VulkanImage(_ctx, (uint)nextLevelWidth, (uint)nextLevelHeight, Format.R32Sfloat,
                 ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
 
-            ExecuteAvgPool(pyramid[i - 1], levelImg, 2, refImage);
+            ExecuteAvgPool(referencePyramid[pyramidLevel - 1], pyramidLevelImage, scale: 2, referenceImage);
 
-            pyramid.Add(levelImg);
-            currentW = nextW;
-            currentH = nextH;
+            referencePyramid.Add(pyramidLevelImage);
+            currentPyramidWidth = nextLevelWidth;
+            currentPyramidHeight = nextLevelHeight;
         }
         _profiler.EndStage("BuildPyramid");
 
-        var disposables = new List<IDisposable>();
+        var disposableResources = new List<IDisposable>();
 
         Console.WriteLine("[VulkanComputePipeline] Starting Alignment Search...");
-        // Calculate TileInfo based on Level 0 dimensions (Half Resolution)
-        var tileInfo = TileInfo.Calculate(width / 2, height / 2, ProcessingOptions.GetTileSizePixels(options.TileSize), ProcessingOptions.GetSearchDistancePixels(options.SearchDistance));
+        // Calculate TileInfo based on Level 0 dimensions (half resolution of input)
+        var alignmentTileInfo = TileInfo.Calculate(
+            imageWidth / 2,
+            imageHeight / 2,
+            ProcessingOptions.GetTileSizePixels(options.TileSize),
+            ProcessingOptions.GetSearchDistancePixels(options.SearchDistance));
 
-        // Accumulators
-        VulkanImage? pixelAccum;
-        VulkanImage? weightAccum;
+        // Accumulators for spatial mode (frequency mode uses its own accumulator)
+        VulkanImage? pixelAccumulator;
+        VulkanImage? weightAccumulator;
 
-        float estimatedNoiseSd;
-        float[] floatData;
+        float estimatedNoiseStandardDeviation;
+        float[] outputFloatData;
 
         if (isFrequency)
         {
-            Console.WriteLine("[VulkanComputePipeline] === FREQUENCY DOMAIN MERGE (4-ITERATION) ===");
+            Console.WriteLine($"[VulkanComputePipeline] === FREQUENCY DOMAIN MERGE ({FrequencyMergeIterationCount}-ITERATION) ===");
             _profiler.BeginStage("FrequencyMerge");
 
-            // CRITICAL: Swift hardcodes tile_size_merge = 8 for FFT merging
-            const int tileSizeMerge = 8;
+            // Calculate alignment padding to ensure tiles align with mosaic pattern boundaries
+            // This formula comes from frequency.swift lines 80-97
+            var mosaicDownscaleFactors = new[] { referenceImage.MosaicPatternWidth, 2, 2, 2 };
+            var combinedTileFactor = alignmentTileSize * mosaicDownscaleFactors.Aggregate(1, (product, factor) => product * factor);
 
-            // Calculate alignment padding (from frequency.swift lines 80-97)
-            var downscaleFactors = new[] { refImage.MosaicPatternWidth, 2, 2, 2 };
-            var tileFactor = tileSize * downscaleFactors.Aggregate(1, (a, b) => a * b);
+            // Calculate horizontal alignment padding
+            var alignmentPaddingX = (int)Math.Ceiling((float)(imageWidth + FrequencyMergeTileSize) / combinedTileFactor);
+            alignmentPaddingX = (alignmentPaddingX * combinedTileFactor - imageWidth - FrequencyMergeTileSize) / 2;
 
-            var padAlignX = (int)Math.Ceiling((float)(width + tileSizeMerge) / tileFactor);
-            padAlignX = (padAlignX * tileFactor - width - tileSizeMerge) / 2;
+            // Calculate vertical alignment padding
+            var alignmentPaddingY = (int)Math.Ceiling((float)(imageHeight + FrequencyMergeTileSize) / combinedTileFactor);
+            alignmentPaddingY = (alignmentPaddingY * combinedTileFactor - imageHeight - FrequencyMergeTileSize) / 2;
 
-            var padAlignY = (int)Math.Ceiling((float)(height + tileSizeMerge) / tileFactor);
-            padAlignY = (padAlignY * tileFactor - height - tileSizeMerge) / 2;
+            // Calculate merge crop amounts (align to FFT tile boundaries)
+            var mergeCropX = (int)Math.Floor((float)alignmentPaddingX / (2 * FrequencyMergeTileSize));
+            mergeCropX = mergeCropX * 2 * FrequencyMergeTileSize;
+            var mergeCropY = (int)Math.Floor((float)alignmentPaddingY / (2 * FrequencyMergeTileSize));
+            mergeCropY = mergeCropY * 2 * FrequencyMergeTileSize;
 
-            // Calculate merge padding (smaller margin for FFT processing)
-            var cropMergeX = (int)Math.Floor((float)padAlignX / (2 * tileSizeMerge));
-            cropMergeX = cropMergeX * 2 * tileSizeMerge;
-            var cropMergeY = (int)Math.Floor((float)padAlignY / (2 * tileSizeMerge));
-            cropMergeY = cropMergeY * 2 * tileSizeMerge;
+            // Final merge padding is alignment padding minus crop
+            var mergePaddingX = alignmentPaddingX - mergeCropX;
+            var mergePaddingY = alignmentPaddingY - mergeCropY;
 
-            var padMergeX = padAlignX - cropMergeX;
-            var padMergeY = padAlignY - cropMergeY;
+            Console.WriteLine($"[VulkanComputePipeline] Padding: Align=({alignmentPaddingX},{alignmentPaddingY}), Merge=({mergePaddingX},{mergePaddingY}), Crop=({mergeCropX},{mergeCropY})");
 
-            Console.WriteLine($"[VulkanComputePipeline] Padding: Align=({padAlignX},{padAlignY}), Merge=({padMergeX},{padMergeY}), Crop=({cropMergeX},{cropMergeY})");
+            // Calculate exposure correction factors for bracketed exposure handling
+            var exposureCorrectionSum1 = 0.0;
+            var exposureCorrectionSum2 = 0.0;
+            var referenceExposureBias = referenceImage.ExposureBias;
+            var referenceIsoExposureProduct = referenceImage.IsoSpeedExposureTimeProduct;
 
-            // Calculate exposure correction factors
-            var exposureCorr1 = 0.0;
-            var exposureCorr2 = 0.0;
-            var refExpBias = refImage.ExposureBias;
-            var refIsoExpTime = refImage.IsoExposureTime;
+            var hasExposureBiasMetadata = input.Images.Any(img => img.ExposureBias != 0);
 
-            var hasExposureBias = input.Images.Any(img => img.ExposureBias != 0);
-
-            for (var i = 0; i < input.Images.Count; i++)
+            for (var imageIndex = 0; imageIndex < input.Images.Count; imageIndex++)
             {
-                var img = input.Images[i];
+                var currentImage = input.Images[imageIndex];
                 double exposureFactor;
 
-                if (hasExposureBias)
+                if (hasExposureBiasMetadata)
                 {
-                    exposureFactor = Math.Pow(2.0, (img.ExposureBias - refExpBias) / 100.0);
+                    // Use exposure bias from metadata (stored in hundredths of an EV)
+                    exposureFactor = Math.Pow(2.0, (currentImage.ExposureBias - referenceExposureBias) / 100.0);
                 }
                 else
                 {
-                    exposureFactor = refIsoExpTime > 0 ? img.IsoExposureTime / refIsoExpTime : 1.0;
+                    // Fall back to ISO * exposure time product
+                    exposureFactor = referenceIsoExposureProduct > 0
+                        ? currentImage.IsoSpeedExposureTimeProduct / referenceIsoExposureProduct
+                        : 1.0;
                 }
 
-                exposureCorr1 += 0.5 + 0.5 / exposureFactor;
-                exposureCorr2 += Math.Min(4.0, exposureFactor);
+                exposureCorrectionSum1 += 0.5 + 0.5 / exposureFactor;
+                exposureCorrectionSum2 += Math.Min(4.0, exposureFactor);
             }
-            exposureCorr1 /= input.Images.Count;
-            exposureCorr2 /= input.Images.Count;
+            var averageExposureCorrection1 = exposureCorrectionSum1 / input.Images.Count;
+            var averageExposureCorrection2 = exposureCorrectionSum2 / input.Images.Count;
 
-            // Allocate final accumulator
-            var accWidth = width + 2 * padAlignX;
-            var accHeight = height + 2 * padAlignY;
-            var finalAccumulator = new VulkanImage(_ctx, (uint)accWidth, (uint)accHeight, Format.R32Sfloat,
+            // Allocate final accumulator with full alignment padding
+            var accumulatorWidth = imageWidth + 2 * alignmentPaddingX;
+            var accumulatorHeight = imageHeight + 2 * alignmentPaddingY;
+            var finalAccumulator = new VulkanImage(_ctx, (uint)accumulatorWidth, (uint)accumulatorHeight, Format.R32Sfloat,
                 ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit | ImageUsageFlags.TransferDstBit);
             _textureUtils.FillWithZeros(finalAccumulator);
-            disposables.Add(finalAccumulator);
+            disposableResources.Add(finalAccumulator);
 
-            // === 4-ITERATION LOOP ===
-            for (var iteration = 1; iteration <= 4; iteration++)
+            // Frequency domain merging uses multiple iterations with offset tile patterns
+            // This reduces blocking artifacts from the FFT tile boundaries
+            for (var iterationIndex = 1; iterationIndex <= FrequencyMergeIterationCount; iterationIndex++)
             {
-                Console.WriteLine($"\n[VulkanComputePipeline] === ITERATION {iteration}/4 ===");
+                // Check for cancellation at start of each iteration
+                cancellationToken.ThrowIfCancellationRequested();
 
-                // Calculate shift values
-                var shiftLeft = (iteration % 2 == 0) ? tileSizeMerge : 0;
-                var shiftRight = (iteration % 2 == 1) ? tileSizeMerge : 0;
-                var shiftTop = (iteration < 3) ? tileSizeMerge : 0;
-                var shiftBottom = (iteration >= 3) ? tileSizeMerge : 0;
+                Console.WriteLine($"\n[VulkanComputePipeline] === ITERATION {iterationIndex}/{FrequencyMergeIterationCount} ===");
 
-                var padLeft = padAlignX + shiftLeft;
-                var padRight = padAlignX + shiftRight;
-                var padTop = padAlignY + shiftTop;
-                var padBottom = padAlignY + shiftBottom;
+                // Report progress for this iteration (25-85% range split across iterations)
+                var iterationProgressBase = 25_000_000 + ((iterationIndex - 1) * 15_000_000);
+                progress.Update(iterationProgressBase, $"Merging pass {iterationIndex} of {FrequencyMergeIterationCount}...");
 
-                var iterOutWidth = width + padLeft + padRight;
-                var iterOutHeight = height + padTop + padBottom;
+                // Calculate tile offset shifts for this iteration
+                // The pattern cycles through 4 positions to cover all tile boundary cases:
+                // Iteration 1: shift right, shift top
+                // Iteration 2: shift left, shift top
+                // Iteration 3: shift right, shift bottom
+                // Iteration 4: shift left, shift bottom
+                var tileShiftLeft = (iterationIndex % 2 == 0) ? FrequencyMergeTileSize : 0;
+                var tileShiftRight = (iterationIndex % 2 == 1) ? FrequencyMergeTileSize : 0;
+                var tileShiftTop = (iterationIndex < 3) ? FrequencyMergeTileSize : 0;
+                var tileShiftBottom = (iterationIndex >= 3) ? FrequencyMergeTileSize : 0;
+
+                var iterationPaddingLeft = alignmentPaddingX + tileShiftLeft;
+                var iterationPaddingRight = alignmentPaddingX + tileShiftRight;
+                var iterationPaddingTop = alignmentPaddingY + tileShiftTop;
+                var iterationPaddingBottom = alignmentPaddingY + tileShiftBottom;
+
+                var iterationOutputWidth = imageWidth + iterationPaddingLeft + iterationPaddingRight;
+                var iterationOutputHeight = imageHeight + iterationPaddingTop + iterationPaddingBottom;
 
                 // Prepare reference with iteration-specific padding
-                using var preparedRef = new VulkanImage(_ctx, (uint)iterOutWidth, (uint)iterOutHeight, Format.R32Sfloat,
+                using var iterationPreparedReference = new VulkanImage(_ctx, (uint)iterationOutputWidth, (uint)iterationOutputHeight, Format.R32Sfloat,
                     ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
 
-                // NOTE: rawTexture already contains refImage.Data - no need to re-upload
-                ExecutePrepare(rawTexture, preparedRef, refImage, padLeft, padTop);
+                // NOTE: rawBayerTexture already contains referenceImage.Data - no need to re-upload
+                ExecutePrepare(rawBayerTexture, iterationPreparedReference, referenceImage, iterationPaddingLeft, iterationPaddingTop);
 
                 // Debug inspection (only runs if enabled)
-                _debugInspector.InspectPreparedTexture(preparedRef, iteration, padLeft, padTop, width, height);
-                _debugHelper.DumpTexture(preparedRef, $"step_1b_iter{iteration}_prepared_ref_bayer", refImage, iterOutWidth, iterOutHeight, 0);
+                _debugInspector.InspectPreparedTexture(iterationPreparedReference, iterationIndex, iterationPaddingLeft, iterationPaddingTop, imageWidth, imageHeight);
+                _debugHelper.DumpTexture(iterationPreparedReference, $"step_1b_iter{iterationIndex}_prepared_ref_bayer", referenceImage, iterationOutputWidth, iterationOutputHeight, 0);
 
-                // RGBA dimensions
-                var rgbaWidth = (iterOutWidth - 2 * cropMergeX) / 2;
-                var rgbaHeight = (iterOutHeight - 2 * cropMergeY) / 2;
-                var ftWidth = rgbaWidth * 2;
-                var ftHeight = rgbaHeight;
+                // Calculate RGBA dimensions (Bayer demosaicing halves dimensions)
+                var rgbaTextureWidth = (iterationOutputWidth - 2 * mergeCropX) / 2;
+                var rgbaTextureHeight = (iterationOutputHeight - 2 * mergeCropY) / 2;
+                var fourierTransformWidth = rgbaTextureWidth * 2;  // Complex numbers stored as pairs
+                var fourierTransformHeight = rgbaTextureHeight;
 
-                // Convert reference Bayer -> RGBA
-                using var rgbaRefTexture = new VulkanImage(_ctx, (uint)rgbaWidth, (uint)rgbaHeight, Format.R32G32B32A32Sfloat,
+                // Convert reference Bayer -> RGBA (demosaic)
+                using var referenceRgbaTexture = new VulkanImage(_ctx, (uint)rgbaTextureWidth, (uint)rgbaTextureHeight, Format.R32G32B32A32Sfloat,
                     ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
-                ExecuteConvertToRgba(preparedRef, rgbaRefTexture, refImage.CfaPattern, cropMergeX, cropMergeY);
+                ExecuteConvertToRgba(iterationPreparedReference, referenceRgbaTexture, referenceImage.CfaPattern, mergeCropX, mergeCropY);
 
-                _debugInspector.InspectRgbaTexture(rgbaRefTexture, iteration, "After convert_to_rgba");
-                _debugHelper.DumpRgbaTexture(rgbaRefTexture, $"step_2_iter{iteration}_ref_rgba", refImage);
+                _debugInspector.InspectRgbaTexture(referenceRgbaTexture, iterationIndex, "After convert_to_rgba");
+                _debugHelper.DumpRgbaTexture(referenceRgbaTexture, $"step_2_iter{iterationIndex}_ref_rgba", referenceImage);
 
                 // FFT VALIDATION: Run round-trip test on first iteration only
-                if (EnableFftValidation && iteration == 1)
+                if (EnableFftValidation && iterationIndex == 1)
                 {
                     Console.WriteLine("\n[VulkanComputePipeline] Running FFT validation (first iteration)...");
-                    var validationResults = RunFftRoundTripValidation(rgbaRefTexture, tileSizeMerge);
-                    _validationResults.AddRange(validationResults);
+                    var fftValidationResults = RunFftRoundTripValidation(referenceRgbaTexture, FrequencyMergeTileSize);
+                    _validationResults.AddRange(fftValidationResults);
 
-                    var roundTripResult = validationResults.FirstOrDefault(r => r.TestName.Contains("Round-Trip"));
+                    var roundTripResult = fftValidationResults.FirstOrDefault(r => r.TestName.Contains("Round-Trip"));
                     if (roundTripResult is not null && !roundTripResult.Passed)
                     {
                         Console.WriteLine("\n>>> FFT VALIDATION FAILED - Round-trip test indicates FFT shader bug");
@@ -371,480 +484,500 @@ public unsafe class VulkanComputePipeline : IComputePipeline
                     }
                 }
 
-                // Build reference pyramid
-                var refPyramid = new List<VulkanImage>();
-                var l0RefW = (int)preparedRef.Width / 2;
-                var l0RefH = (int)preparedRef.Height / 2;
+                // Build reference pyramid for this iteration
+                var iterationReferencePyramid = new List<VulkanImage>();
+                var iterationPyramidLevel0Width = (int)iterationPreparedReference.Width / 2;
+                var iterationPyramidLevel0Height = (int)iterationPreparedReference.Height / 2;
 
-                if (l0RefW % 2 != 0) l0RefW++;
-                if (l0RefH % 2 != 0) l0RefH++;
+                if (iterationPyramidLevel0Width % 2 != 0) iterationPyramidLevel0Width++;
+                if (iterationPyramidLevel0Height % 2 != 0) iterationPyramidLevel0Height++;
 
-                var refLevel0 = new VulkanImage(_ctx, (uint)l0RefW, (uint)l0RefH, Format.R32Sfloat,
+                var iterationRefLevel0 = new VulkanImage(_ctx, (uint)iterationPyramidLevel0Width, (uint)iterationPyramidLevel0Height, Format.R32Sfloat,
                     ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
-                ExecuteAvgPool(preparedRef, refLevel0, 2, refImage);
-                refPyramid.Add(refLevel0);
+                ExecuteAvgPool(iterationPreparedReference, iterationRefLevel0, scale: 2, referenceImage);
+                iterationReferencePyramid.Add(iterationRefLevel0);
 
-                int currW = l0RefW, currH = l0RefH;
-                for (var lvl = 1; lvl < 4; lvl++)
+                int iterPyramidWidth = iterationPyramidLevel0Width, iterPyramidHeight = iterationPyramidLevel0Height;
+                for (var pyramidLevel = 1; pyramidLevel < PyramidLevelCount; pyramidLevel++)
                 {
-                    var nW = currW / 2;
-                    if (nW % 2 != 0) nW++;
-                    var nH = currH / 2;
-                    if (nH % 2 != 0) nH++;
-                    var blurredPrev = new VulkanImage(_ctx, (uint)currW, (uint)currH, Format.R32Sfloat,
+                    var nextPyramidWidth = iterPyramidWidth / 2;
+                    if (nextPyramidWidth % 2 != 0) nextPyramidWidth++;
+                    var nextPyramidHeight = iterPyramidHeight / 2;
+                    if (nextPyramidHeight % 2 != 0) nextPyramidHeight++;
+                    var blurredPreviousLevel = new VulkanImage(_ctx, (uint)iterPyramidWidth, (uint)iterPyramidHeight, Format.R32Sfloat,
                         ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
-                    disposables.Add(blurredPrev);
-                    ExecuteBlur(refPyramid[lvl - 1], blurredPrev, 2, 1);
-                    var levelImg = new VulkanImage(_ctx, (uint)nW, (uint)nH, Format.R32Sfloat,
+                    disposableResources.Add(blurredPreviousLevel);
+                    ExecuteBlur(iterationReferencePyramid[pyramidLevel - 1], blurredPreviousLevel, kernelSize: 2, mosaicPatternWidth: 1);
+                    var pyramidLevelImage = new VulkanImage(_ctx, (uint)nextPyramidWidth, (uint)nextPyramidHeight, Format.R32Sfloat,
                         ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
-                    ExecuteAvgPool(blurredPrev, levelImg, 2, refImage);
-                    refPyramid.Add(levelImg);
-                    currW = nW;
-                    currH = nH;
+                    ExecuteAvgPool(blurredPreviousLevel, pyramidLevelImage, scale: 2, referenceImage);
+                    iterationReferencePyramid.Add(pyramidLevelImage);
+                    iterPyramidWidth = nextPyramidWidth;
+                    iterPyramidHeight = nextPyramidHeight;
                 }
 
-                var iterTileInfo = TileInfo.Calculate(l0RefW, l0RefH, tileSize, ProcessingOptions.GetSearchDistancePixels(options.SearchDistance));
+                var iterationTileInfo = TileInfo.Calculate(iterationPyramidLevel0Width, iterationPyramidLevel0Height, alignmentTileSize, ProcessingOptions.GetSearchDistancePixels(options.SearchDistance));
 
-                // Calculate RMS per iteration (tile grid size)
-                var nTilesX = (iterOutWidth - 2 * cropMergeX) / (2 * tileSizeMerge);
-                var nTilesY = (iterOutHeight - 2 * cropMergeY) / (2 * tileSizeMerge);
+                // Calculate tile grid dimensions for RMS and mismatch tracking
+                var tileGridCountX = (iterationOutputWidth - 2 * mergeCropX) / (2 * FrequencyMergeTileSize);
+                var tileGridCountY = (iterationOutputHeight - 2 * mergeCropY) / (2 * FrequencyMergeTileSize);
 
-                using var rmsTexture = new VulkanImage(_ctx, (uint)nTilesX, (uint)nTilesY, Format.R32G32B32A32Sfloat,
+                using var rmsTexture = new VulkanImage(_ctx, (uint)tileGridCountX, (uint)tileGridCountY, Format.R32G32B32A32Sfloat,
                     ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit);
-                ExecuteCalculateRms(rgbaRefTexture, rmsTexture, nTilesX, nTilesY, tileSizeMerge);
+                ExecuteCalculateRms(referenceRgbaTexture, rmsTexture, tileGridCountX, tileGridCountY, FrequencyMergeTileSize);
 
-                // Initialize total mismatch texture for this iteration
-                using var totalMismatchTexture = new VulkanImage(_ctx, (uint)nTilesX, (uint)nTilesY, Format.R32G32B32A32Sfloat,
+                // Initialize total mismatch texture for accumulating alignment errors across frames
+                using var totalMismatchTexture = new VulkanImage(_ctx, (uint)tileGridCountX, (uint)tileGridCountY, Format.R32G32B32A32Sfloat,
                     ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferDstBit);
                 _textureUtils.FillWithZeros(totalMismatchTexture);
 
-                // Forward FFT on reference
-                using var refFt = new VulkanImage(_ctx, (uint)ftWidth, (uint)ftHeight, Format.R32G32B32A32Sfloat,
+                // Forward FFT on reference to transform to frequency domain
+                using var referenceFourierTransform = new VulkanImage(_ctx, (uint)fourierTransformWidth, (uint)fourierTransformHeight, Format.R32G32B32A32Sfloat,
                     ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
-                ExecuteForwardFft(rgbaRefTexture, refFt, tileSizeMerge, rgbaWidth, rgbaHeight);
+                ExecuteForwardFft(referenceRgbaTexture, referenceFourierTransform, FrequencyMergeTileSize, rgbaTextureWidth, rgbaTextureHeight);
 
-                _debugInspector.InspectFftOutput(refFt, iteration, "After forward_fft");
+                _debugInspector.InspectFftOutput(referenceFourierTransform, iterationIndex, "After forward_fft");
 
-                // Initialize frequency domain accumulator
-                using var finalTextureFt = new VulkanImage(_ctx, (uint)ftWidth, (uint)ftHeight, Format.R32G32B32A32Sfloat,
+                // Initialize frequency domain accumulator (starts with reference FFT)
+                using var accumulatedFourierTransform = new VulkanImage(_ctx, (uint)fourierTransformWidth, (uint)fourierTransformHeight, Format.R32G32B32A32Sfloat,
                     ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit | ImageUsageFlags.TransferDstBit);
-                _textureUtils.CopyImage(refFt, finalTextureFt, ftWidth, ftHeight);
+                _textureUtils.CopyImage(referenceFourierTransform, accumulatedFourierTransform, fourierTransformWidth, fourierTransformHeight);
 
                 // Estimate noise for this iteration
-                estimatedNoiseSd = ExecuteNoiseEstimationGpu(preparedRef, refImage.MosaicPatternWidth);
+                estimatedNoiseStandardDeviation = ExecuteNoiseEstimationGpu(iterationPreparedReference, referenceImage.MosaicPatternWidth);
 
-                // === COMPARISON LOOP ===
-                for (var compIdx = 0; compIdx < input.Images.Count; compIdx++)
+                // Process each comparison frame (non-reference frames)
+                for (var comparisonFrameIndex = 0; comparisonFrameIndex < input.Images.Count; comparisonFrameIndex++)
                 {
-                    if (compIdx == input.ReferenceFrameIndex)
+                    if (comparisonFrameIndex == input.ReferenceFrameIndex)
                     {
                         continue;
                     }
 
-                    var altImage = input.Images[compIdx];
+                    // Check for cancellation at start of each comparison
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var comparisonImage = input.Images[comparisonFrameIndex];
+
+                    // Report progress for each comparison frame
+                    var comparisonProgress = iterationProgressBase + (comparisonFrameIndex * 15_000_000 / Math.Max(1, input.Images.Count - 1));
+                    progress.Update(comparisonProgress, $"Pass {iterationIndex}/{FrequencyMergeIterationCount}: Aligning frame {comparisonFrameIndex + 1}/{input.Images.Count}...");
 
                     // Prepare comparison frame with iteration-specific padding
-                    using var rawAlt = new VulkanImage(_ctx, (uint)width, (uint)height, Format.R16Uint,
+                    using var rawComparisonBayer = new VulkanImage(_ctx, (uint)imageWidth, (uint)imageHeight, Format.R16Uint,
                         ImageUsageFlags.TransferDstBit | ImageUsageFlags.SampledBit | ImageUsageFlags.StorageBit);
-                    rawAlt.SetData(altImage.Data);
+                    rawComparisonBayer.SetData(comparisonImage.Data);
 
-                    using var preparedAlt = new VulkanImage(_ctx, (uint)iterOutWidth, (uint)iterOutHeight, Format.R32Sfloat,
+                    using var preparedComparisonFrame = new VulkanImage(_ctx, (uint)iterationOutputWidth, (uint)iterationOutputHeight, Format.R32Sfloat,
                         ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
 
-                    // Calculate exposure difference for prepare pass
-                    int prepareExpDiff;
-                    if (hasExposureBias)
+                    // Calculate exposure difference for prepare pass (in hundredths of an EV)
+                    int prepareExposureDifference;
+                    if (hasExposureBiasMetadata)
                     {
-                        prepareExpDiff = refImage.ExposureBias - altImage.ExposureBias;
+                        prepareExposureDifference = referenceImage.ExposureBias - comparisonImage.ExposureBias;
                     }
                     else
                     {
-                        var ratio = refImage.IsoExposureTime / Math.Max(altImage.IsoExposureTime, 0.0001);
-                        prepareExpDiff = (int)Math.Round(Math.Log2(ratio) * 100.0);
+                        var exposureRatio = referenceImage.IsoSpeedExposureTimeProduct / Math.Max(comparisonImage.IsoSpeedExposureTimeProduct, 0.0001);
+                        prepareExposureDifference = (int)Math.Round(Math.Log2(exposureRatio) * 100.0);
                     }
-                    ExecutePrepare(rawAlt, preparedAlt, altImage, padLeft, padTop, prepareExpDiff);
+                    ExecutePrepare(rawComparisonBayer, preparedComparisonFrame, comparisonImage, iterationPaddingLeft, iterationPaddingTop, prepareExposureDifference);
 
-                    _debugHelper.DumpTexture(preparedAlt, $"step_1c_iter{iteration}_prepared_comp{compIdx}_bayer", refImage, iterOutWidth, iterOutHeight, 0);
+                    _debugHelper.DumpTexture(preparedComparisonFrame, $"step_1c_iter{iterationIndex}_prepared_comp{comparisonFrameIndex}_bayer", referenceImage, iterationOutputWidth, iterationOutputHeight, 0);
 
-                    // Build comparison pyramid
-                    var altPyramid = new List<VulkanImage>();
-                    var l0AltW = (int)preparedAlt.Width / 2;
-                    var l0AltH = (int)preparedAlt.Height / 2;
+                    // Build comparison pyramid for alignment
+                    var comparisonPyramid = new List<VulkanImage>();
+                    var comparisonPyramidLevel0Width = (int)preparedComparisonFrame.Width / 2;
+                    var comparisonPyramidLevel0Height = (int)preparedComparisonFrame.Height / 2;
 
-                    if (l0AltW % 2 != 0) l0AltW++;
-                    if (l0AltH % 2 != 0) l0AltH++;
+                    if (comparisonPyramidLevel0Width % 2 != 0) comparisonPyramidLevel0Width++;
+                    if (comparisonPyramidLevel0Height % 2 != 0) comparisonPyramidLevel0Height++;
 
-                    var altLevel0 = new VulkanImage(_ctx, (uint)l0AltW, (uint)l0AltH, Format.R32Sfloat,
+                    var comparisonLevel0 = new VulkanImage(_ctx, (uint)comparisonPyramidLevel0Width, (uint)comparisonPyramidLevel0Height, Format.R32Sfloat,
                         ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
-                    ExecuteAvgPool(preparedAlt, altLevel0, 2, altImage);
-                    altPyramid.Add(altLevel0);
+                    ExecuteAvgPool(preparedComparisonFrame, comparisonLevel0, scale: 2, comparisonImage);
+                    comparisonPyramid.Add(comparisonLevel0);
 
-                    currW = l0AltW;
-                    currH = l0AltH;
-                    for (var lvl = 1; lvl < 4; lvl++)
+                    var compPyramidWidth = comparisonPyramidLevel0Width;
+                    var compPyramidHeight = comparisonPyramidLevel0Height;
+                    for (var compPyramidLevel = 1; compPyramidLevel < PyramidLevelCount; compPyramidLevel++)
                     {
-                        var nW = currW / 2;
-                        if (nW % 2 != 0) nW++;
-                        var nH = currH / 2;
-                        if (nH % 2 != 0) nH++;
-                        using var blurredPrevAlt = new VulkanImage(_ctx, (uint)currW, (uint)currH, Format.R32Sfloat,
+                        var nextCompPyramidWidth = compPyramidWidth / 2;
+                        if (nextCompPyramidWidth % 2 != 0) nextCompPyramidWidth++;
+                        var nextCompPyramidHeight = compPyramidHeight / 2;
+                        if (nextCompPyramidHeight % 2 != 0) nextCompPyramidHeight++;
+                        using var blurredPreviousComparison = new VulkanImage(_ctx, (uint)compPyramidWidth, (uint)compPyramidHeight, Format.R32Sfloat,
                             ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
-                        ExecuteBlur(altPyramid[lvl - 1], blurredPrevAlt, 2, 1);
-                        var levelImg = new VulkanImage(_ctx, (uint)nW, (uint)nH, Format.R32Sfloat,
+                        ExecuteBlur(comparisonPyramid[compPyramidLevel - 1], blurredPreviousComparison, kernelSize: 2, mosaicPatternWidth: 1);
+                        var comparisonPyramidLevel = new VulkanImage(_ctx, (uint)nextCompPyramidWidth, (uint)nextCompPyramidHeight, Format.R32Sfloat,
                             ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
-                        ExecuteAvgPool(blurredPrevAlt, levelImg, 2, altImage);
-                        altPyramid.Add(levelImg);
-                        currW = nW;
-                        currH = nH;
+                        ExecuteAvgPool(blurredPreviousComparison, comparisonPyramidLevel, scale: 2, comparisonImage);
+                        comparisonPyramid.Add(comparisonPyramidLevel);
+                        compPyramidWidth = nextCompPyramidWidth;
+                        compPyramidHeight = nextCompPyramidHeight;
                     }
 
-                    // Align and warp
-                    using var alignment = new VulkanImage(_ctx, (uint)iterTileInfo.NTilesX, (uint)iterTileInfo.NTilesY, Format.R16G16B16A16Sint,
+                    // Compute alignment vectors between reference and comparison pyramids
+                    using var alignmentVectors = new VulkanImage(_ctx, (uint)iterationTileInfo.TileCountX, (uint)iterationTileInfo.TileCountY, Format.R16G16B16A16Sint,
                         ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit);
-                    var isUniformExposure = (altImage.ExposureBias == refImage.ExposureBias);
-                    ExecuteAlignmentSearch(refPyramid, altPyramid, alignment, iterTileInfo, 2, isUniformExposure);
+                    var hasUniformExposure = (comparisonImage.ExposureBias == referenceImage.ExposureBias);
+                    ExecuteAlignmentSearch(iterationReferencePyramid, comparisonPyramid, alignmentVectors, iterationTileInfo, scale: 2, hasUniformExposure);
 
-                    _debugHelper.DumpAlignment(alignment, $"step_2a_iter{iteration}_alignment_comp{compIdx}", refImage);
+                    _debugHelper.DumpAlignment(alignmentVectors, $"step_2a_iter{iterationIndex}_alignment_comp{comparisonFrameIndex}", referenceImage);
 
-                    using var warpedAlt = new VulkanImage(_ctx, (uint)iterOutWidth, (uint)iterOutHeight, Format.R32Sfloat,
+                    using var warpedComparisonFrame = new VulkanImage(_ctx, (uint)iterationOutputWidth, (uint)iterationOutputHeight, Format.R32Sfloat,
                         ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
 
-                    ExecuteWarp(preparedAlt, warpedAlt, alignment, iterTileInfo, padLeft, padTop);
+                    ExecuteWarp(preparedComparisonFrame, warpedComparisonFrame, alignmentVectors, iterationTileInfo, iterationPaddingLeft, iterationPaddingTop);
 
-                    _debugHelper.DumpTexture(warpedAlt, $"step_2b_iter{iteration}_warped_comp{compIdx}_bayer", refImage, iterOutWidth, iterOutHeight, 0);
+                    _debugHelper.DumpTexture(warpedComparisonFrame, $"step_2b_iter{iterationIndex}_warped_comp{comparisonFrameIndex}_bayer", referenceImage, iterationOutputWidth, iterationOutputHeight, 0);
 
-                    using var alignedTextureRgba = new VulkanImage(_ctx, (uint)rgbaWidth, (uint)rgbaHeight, Format.R32G32B32A32Sfloat,
+                    using var alignedComparisonRgba = new VulkanImage(_ctx, (uint)rgbaTextureWidth, (uint)rgbaTextureHeight, Format.R32G32B32A32Sfloat,
                         ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
-                    ExecuteConvertToRgba(warpedAlt, alignedTextureRgba, refImage.CfaPattern, cropMergeX, cropMergeY);
+                    ExecuteConvertToRgba(warpedComparisonFrame, alignedComparisonRgba, referenceImage.CfaPattern, mergeCropX, mergeCropY);
 
-                    _debugHelper.DumpRgbaTexture(alignedTextureRgba, $"step_3_iter{iteration}_aligned_comp{compIdx}_rgba", refImage);
+                    _debugHelper.DumpRgbaTexture(alignedComparisonRgba, $"step_3_iter{iterationIndex}_aligned_comp{comparisonFrameIndex}_rgba", referenceImage);
 
                     // Execute frequency domain merge
-                    var uniformExp = hasExposureBias
-                        ? (altImage.ExposureBias == refImage.ExposureBias ? 1 : 0)
-                        : (Math.Abs(altImage.IsoExposureTime - refImage.IsoExposureTime) < 0.001f ? 1 : 0);
-                    var expDiffForMerge = (float)(-prepareExpDiff);
-                    ExecuteMergeFrequency(refFt, rgbaRefTexture, alignedTextureRgba, null!, finalTextureFt,
-                        refImage.WhiteLevel, 0.0f, options.NoiseReduction, estimatedNoiseSd, expDiffForMerge, tileSize, refImage.MosaicPatternWidth, uniformExp,
-                        totalMismatchTexture, input.Images.Count, exposureCorr1 / exposureCorr2);
+                    var isUniformExposureForMerge = hasExposureBiasMetadata
+                        ? (comparisonImage.ExposureBias == referenceImage.ExposureBias ? 1 : 0)
+                        : (Math.Abs(comparisonImage.IsoSpeedExposureTimeProduct - referenceImage.IsoSpeedExposureTimeProduct) < 0.001f ? 1 : 0);
+                    var exposureDifferenceForMerge = (float)(-prepareExposureDifference);
+                    ExecuteMergeFrequency(referenceFourierTransform, referenceRgbaTexture, alignedComparisonRgba, null!, accumulatedFourierTransform,
+                        referenceImage.WhiteLevel, blackLevel: 0.0f, options.NoiseReduction, estimatedNoiseStandardDeviation, exposureDifferenceForMerge, alignmentTileSize, referenceImage.MosaicPatternWidth, isUniformExposureForMerge,
+                        totalMismatchTexture, input.Images.Count, averageExposureCorrection1 / averageExposureCorrection2);
 
-                    // Cleanup alt pyramid
-                    foreach (var lvl in altPyramid)
+                    // Cleanup comparison pyramid
+                    foreach (var pyramidLevel in comparisonPyramid)
                     {
-                        if (lvl != preparedAlt)
+                        if (pyramidLevel != preparedComparisonFrame)
                         {
-                            lvl.Dispose();
+                            pyramidLevel.Dispose();
                         }
                     }
                 }
 
-                // Post-iteration processing
-                using var outputTextureRgba = new VulkanImage(_ctx, (uint)rgbaWidth, (uint)rgbaHeight, Format.R32G32B32A32Sfloat,
+                // Post-iteration processing: deconvolute, inverse FFT, artifact reduction
+                using var iterationOutputRgba = new VulkanImage(_ctx, (uint)rgbaTextureWidth, (uint)rgbaTextureHeight, Format.R32G32B32A32Sfloat,
                     ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
-
-                var bayerTilesX = nTilesX;
-                var bayerTilesY = nTilesY;
 
                 // Use batched execution when debug is disabled for maximum performance
                 if (!_debugHelper.Enabled)
                 {
                     // OPTIMIZED PATH: Single command buffer for deconvolute + backward FFT + reduce artifacts
                     ExecutePostProcessingBatched(
-                        finalTextureFt, totalMismatchTexture, outputTextureRgba, rgbaRefTexture,
-                        nTilesX, nTilesY, tileSizeMerge, input.Images.Count, refImage.BlackLevel, options.SkipReduceArtifacts);
+                        accumulatedFourierTransform, totalMismatchTexture, iterationOutputRgba, referenceRgbaTexture,
+                        tileGridCountX, tileGridCountY, FrequencyMergeTileSize, input.Images.Count, referenceImage.BlackLevels, options.SkipReduceArtifacts);
                 }
                 else
                 {
                     // DEBUG PATH: Individual calls for inspection
-                    _debugInspector.InspectDeconvolution(finalTextureFt, iteration, true);
+                    _debugInspector.InspectDeconvolution(accumulatedFourierTransform, iterationIndex, isBefore: true);
 
                     // Deconvolute with accumulated mismatch
-                    ExecuteDeconvoluteFrequency(finalTextureFt, totalMismatchTexture, nTilesX, nTilesY, tileSizeMerge);
+                    ExecuteDeconvoluteFrequency(accumulatedFourierTransform, totalMismatchTexture, tileGridCountX, tileGridCountY, FrequencyMergeTileSize);
 
-                    _debugInspector.InspectDeconvolution(finalTextureFt, iteration, false);
+                    _debugInspector.InspectDeconvolution(accumulatedFourierTransform, iterationIndex, isBefore: false);
 
-                    // Backward FFT
-                    ExecuteBackwardFft(finalTextureFt, outputTextureRgba, input.Images.Count, tileSizeMerge);
+                    // Backward FFT to convert from frequency to spatial domain
+                    ExecuteBackwardFft(accumulatedFourierTransform, iterationOutputRgba, input.Images.Count, FrequencyMergeTileSize);
 
-                    _debugInspector.InspectBackwardFftOutput(outputTextureRgba, iteration, tileSizeMerge, rgbaWidth, rgbaHeight);
-                    _debugHelper.DumpRgbaTexture(outputTextureRgba, $"step_4_iter{iteration}_merged_before_reduce", refImage);
+                    _debugInspector.InspectBackwardFftOutput(iterationOutputRgba, iterationIndex, FrequencyMergeTileSize, rgbaTextureWidth, rgbaTextureHeight);
+                    _debugHelper.DumpRgbaTexture(iterationOutputRgba, $"step_4_iter{iterationIndex}_merged_before_reduce", referenceImage);
 
-                    // Reduce tile border artifacts
+                    // Reduce tile border artifacts from FFT processing
                     if (!options.SkipReduceArtifacts)
                     {
-                        ExecuteReduceArtifacts(outputTextureRgba, rgbaRefTexture, bayerTilesX, bayerTilesY, tileSizeMerge, refImage.BlackLevel);
+                        ExecuteReduceArtifacts(iterationOutputRgba, referenceRgbaTexture, tileGridCountX, tileGridCountY, FrequencyMergeTileSize, referenceImage.BlackLevels);
                     }
 
-                    _debugHelper.DumpRgbaTexture(outputTextureRgba, $"step_5_iter{iteration}_merged_after_reduce", refImage);
+                    _debugHelper.DumpRgbaTexture(iterationOutputRgba, $"step_5_iter{iterationIndex}_merged_after_reduce", referenceImage);
                 }
 
-                // Convert RGBA -> Bayer
-                var bayerWidth = rgbaWidth * 2;
-                var bayerHeight = rgbaHeight * 2;
-                using var outputTextureBayer = new VulkanImage(_ctx, (uint)bayerWidth, (uint)bayerHeight, Format.R32Sfloat,
+                // Convert RGBA back to Bayer format
+                var iterationBayerWidth = rgbaTextureWidth * 2;
+                var iterationBayerHeight = rgbaTextureHeight * 2;
+                using var iterationOutputBayer = new VulkanImage(_ctx, (uint)iterationBayerWidth, (uint)iterationBayerHeight, Format.R32Sfloat,
                     ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
-                ExecuteConvertToBayer(outputTextureRgba, outputTextureBayer, refImage.CfaPattern);
+                ExecuteConvertToBayer(iterationOutputRgba, iterationOutputBayer, referenceImage.CfaPattern);
 
-                _debugInspector.InspectBayerOutput(outputTextureBayer, iteration);
-                _debugHelper.DumpTexture(outputTextureBayer, $"step_5b_iter{iteration}_bayer_after_convert", refImage, bayerWidth, bayerHeight, 0);
+                _debugInspector.InspectBayerOutput(iterationOutputBayer, iterationIndex);
+                _debugHelper.DumpTexture(iterationOutputBayer, $"step_5b_iter{iterationIndex}_bayer_after_convert", referenceImage, iterationBayerWidth, iterationBayerHeight, 0);
 
-                // Calculate crop amounts
-                var cropLeft = padMergeX + shiftLeft;
-                var cropRight = padMergeX + shiftRight;
-                var cropTop = padMergeY + shiftTop;
-                var cropBottom = padMergeY + shiftBottom;
+                // Calculate crop amounts for accumulator blending
+                var iterationCropLeft = mergePaddingX + tileShiftLeft;
+                var iterationCropRight = mergePaddingX + tileShiftRight;
+                var iterationCropTop = mergePaddingY + tileShiftTop;
+                var iterationCropBottom = mergePaddingY + tileShiftBottom;
 
                 // GPU-accelerated accumulation (no CPU round-trip!)
                 _textureUtils.AccumulateCroppedRegionGpu(
-                    outputTextureBayer,
+                    iterationOutputBayer,
                     finalAccumulator,
-                    cropLeft, cropTop,
-                    padAlignX, padAlignY,
-                    width, height);
+                    iterationCropLeft, iterationCropTop,
+                    alignmentPaddingX, alignmentPaddingY,
+                    imageWidth, imageHeight);
 
-                // Cleanup ref pyramid
-                foreach (var lvl in refPyramid)
+                // Cleanup reference pyramid for this iteration
+                foreach (var pyramidLevel in iterationReferencePyramid)
                 {
-                    if (lvl != preparedRef) lvl.Dispose();
+                    if (pyramidLevel != iterationPreparedReference) pyramidLevel.Dispose();
                 }
 
-                Console.WriteLine($"[VulkanComputePipeline] Iteration {iteration} complete");
+                Console.WriteLine($"[VulkanComputePipeline] Iteration {iterationIndex} complete");
             }
 
-            // Use finalAccumulator as the merged result
-            Console.WriteLine("[VulkanComputePipeline] All 4 iterations complete");
+            // All iterations complete - finalAccumulator contains the merged result
+            Console.WriteLine($"[VulkanComputePipeline] All {FrequencyMergeIterationCount} iterations complete");
             _profiler.EndStage("FrequencyMerge");
 
             using (_profiler.MeasureStage("NoiseEstimation"))
             {
-                estimatedNoiseSd = ExecuteNoiseEstimationGpu(finalAccumulator, refImage.MosaicPatternWidth);
+                estimatedNoiseStandardDeviation = ExecuteNoiseEstimationGpu(finalAccumulator, referenceImage.MosaicPatternWidth);
             }
 
             // Download result from final accumulator
             using (_profiler.MeasureStage("Download"))
             {
-                floatData = finalAccumulator.GetData<float>();
+                outputFloatData = finalAccumulator.GetData<float>();
             }
 
             // Update dimensions for exposure correction and cropping
-            outWidth = accWidth;
-            outHeight = accHeight;
-            pad = padAlignX;
+            paddedWidth = accumulatorWidth;
+            paddedHeight = accumulatorHeight;
+            paddingAmount = alignmentPaddingX;
 
-            _debugInspector.InspectFinalAccumulator(floatData, padAlignX, padAlignY, accWidth, width, height);
-            _debugHelper.AnalyzeBayerTileBoundaries(floatData, accWidth, accHeight, padAlignX, padAlignY, tileSizeMerge * 2);
+            _debugInspector.InspectFinalAccumulator(outputFloatData, alignmentPaddingX, alignmentPaddingY, accumulatorWidth, imageWidth, imageHeight);
+            _debugHelper.AnalyzeBayerTileBoundaries(outputFloatData, accumulatorWidth, accumulatorHeight, alignmentPaddingX, alignmentPaddingY, FrequencyMergeTileSize * 2);
         }
         else
         {
-            // Spatial mode
+            // Spatial mode: weighted pixel averaging in spatial domain
             _profiler.BeginStage("SpatialMerge");
-            pixelAccum = new VulkanImage(_ctx, (uint)outWidth, (uint)outHeight, Format.R32Sfloat,
+            pixelAccumulator = new VulkanImage(_ctx, (uint)paddedWidth, (uint)paddedHeight, Format.R32Sfloat,
                 ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit | ImageUsageFlags.TransferDstBit);
-            weightAccum = new VulkanImage(_ctx, (uint)outWidth, (uint)outHeight, Format.R32Sfloat,
+            weightAccumulator = new VulkanImage(_ctx, (uint)paddedWidth, (uint)paddedHeight, Format.R32Sfloat,
                 ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit | ImageUsageFlags.TransferDstBit);
 
-            pixelAccum.SetData(preparedTexture.GetData<float>()); // Init with Ref
+            // Initialize pixel accumulator with reference frame
+            pixelAccumulator.SetData(preparedTexture.GetData<float>());
 
-            // Init Weight with 1.0
-            var ones = new float[outWidth * outHeight];
-            Array.Fill(ones, 1.0f);
-            weightAccum.SetData(ones);
+            // Initialize weight accumulator with 1.0 (reference frame has weight 1)
+            var initialWeights = new float[paddedWidth * paddedHeight];
+            Array.Fill(initialWeights, 1.0f);
+            weightAccumulator.SetData(initialWeights);
 
-            disposables.Add(pixelAccum);
-            disposables.Add(weightAccum);
+            disposableResources.Add(pixelAccumulator);
+            disposableResources.Add(weightAccumulator);
 
             using (_profiler.MeasureStage("NoiseEstimation"))
             {
-                estimatedNoiseSd = ExecuteNoiseEstimationGpu(preparedTexture, refImage.MosaicPatternWidth);
+                estimatedNoiseStandardDeviation = ExecuteNoiseEstimationGpu(preparedTexture, referenceImage.MosaicPatternWidth);
             }
 
-            for (var i = 0; i < input.Images.Count; i++)
+            for (var frameIndex = 0; frameIndex < input.Images.Count; frameIndex++)
             {
-                if (i == input.ReferenceFrameIndex)
+                if (frameIndex == input.ReferenceFrameIndex)
                 {
                     continue;
                 }
 
-                Console.WriteLine($"[VulkanComputePipeline] Aligning Image {i}...");
-                var altImage = input.Images[i];
+                // Check for cancellation at start of each image
+                cancellationToken.ThrowIfCancellationRequested();
+
+                // Report progress for each frame
+                var frameProgressValue = 25_000_000 + (frameIndex * 60_000_000 / Math.Max(1, input.Images.Count - 1));
+                progress.Update(frameProgressValue, $"Aligning frame {frameIndex + 1}/{input.Images.Count}...");
+
+                Console.WriteLine($"[VulkanComputePipeline] Aligning Image {frameIndex}...");
+                var comparisonImage = input.Images[frameIndex];
 
                 using (_profiler.MeasureStage("UploadAlt"))
                 {
-                    using var rawAlt = new VulkanImage(_ctx, (uint)width, (uint)height, Format.R16Uint,
+                    using var rawComparisonBayer = new VulkanImage(_ctx, (uint)imageWidth, (uint)imageHeight, Format.R16Uint,
                         ImageUsageFlags.TransferDstBit | ImageUsageFlags.SampledBit | ImageUsageFlags.StorageBit);
-                    rawAlt.SetData(altImage.Data);
+                    rawComparisonBayer.SetData(comparisonImage.Data);
 
-                    using var preparedAlt = new VulkanImage(_ctx, (uint)outWidth, (uint)outHeight, Format.R32Sfloat,
+                    using var preparedComparisonFrame = new VulkanImage(_ctx, (uint)paddedWidth, (uint)paddedHeight, Format.R32Sfloat,
                         ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
                     using (_profiler.MeasureStage("PrepareAlt"))
                     {
-                        ExecutePrepare(rawAlt, preparedAlt, altImage, pad, pad);
+                        ExecutePrepare(rawComparisonBayer, preparedComparisonFrame, comparisonImage, paddingAmount, paddingAmount);
                     }
 
-                    // Pyramid Alternate
+                    // Build comparison pyramid for alignment
                     _profiler.BeginStage("BuildAltPyramid");
-                    var altPyramid = new List<VulkanImage>();
+                    var comparisonPyramid = new List<VulkanImage>();
 
-                    var l0AltSw = (int)preparedAlt.Width / 2;
-                    var l0AltSh = (int)preparedAlt.Height / 2;
+                    var compPyramidLevel0Width = (int)preparedComparisonFrame.Width / 2;
+                    var compPyramidLevel0Height = (int)preparedComparisonFrame.Height / 2;
 
-                    if (l0AltSw % 2 != 0) l0AltSw++;
-                    if (l0AltSh % 2 != 0) l0AltSh++;
+                    if (compPyramidLevel0Width % 2 != 0) compPyramidLevel0Width++;
+                    if (compPyramidLevel0Height % 2 != 0) compPyramidLevel0Height++;
 
-                    var altLevel0S = new VulkanImage(_ctx, (uint)l0AltSw, (uint)l0AltSh, Format.R32Sfloat, ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
-                    ExecuteAvgPool(preparedAlt, altLevel0S, 2, altImage);
-                    altPyramid.Add(altLevel0S);
+                    var comparisonLevel0 = new VulkanImage(_ctx, (uint)compPyramidLevel0Width, (uint)compPyramidLevel0Height, Format.R32Sfloat, ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
+                    ExecuteAvgPool(preparedComparisonFrame, comparisonLevel0, scale: 2, comparisonImage);
+                    comparisonPyramid.Add(comparisonLevel0);
 
-                    var currW = l0AltSw;
-                    var currH = l0AltSh;
-                    for (var val = 1; val < 4; val++)
+                    var compPyramidWidth = compPyramidLevel0Width;
+                    var compPyramidHeight = compPyramidLevel0Height;
+                    for (var pyramidLevel = 1; pyramidLevel < PyramidLevelCount; pyramidLevel++)
                     {
-                        var nW = currW / 2;
-                        if (nW % 2 != 0) nW++;
+                        var nextPyramidWidth = compPyramidWidth / 2;
+                        if (nextPyramidWidth % 2 != 0) nextPyramidWidth++;
 
-                        var nH = currH / 2;
-                        if (nH % 2 != 0) nH++;
+                        var nextPyramidHeight = compPyramidHeight / 2;
+                        if (nextPyramidHeight % 2 != 0) nextPyramidHeight++;
 
-                        var lvl = new VulkanImage(_ctx, (uint)nW, (uint)nH, Format.R32Sfloat, ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
-                        ExecuteAvgPool(altPyramid[val - 1], lvl, 2, altImage);
-                        altPyramid.Add(lvl);
-                        currW = nW;
-                        currH = nH;
+                        var pyramidLevelImage = new VulkanImage(_ctx, (uint)nextPyramidWidth, (uint)nextPyramidHeight, Format.R32Sfloat, ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
+                        ExecuteAvgPool(comparisonPyramid[pyramidLevel - 1], pyramidLevelImage, scale: 2, comparisonImage);
+                        comparisonPyramid.Add(pyramidLevelImage);
+                        compPyramidWidth = nextPyramidWidth;
+                        compPyramidHeight = nextPyramidHeight;
                     }
                     _profiler.EndStage("BuildAltPyramid");
 
-                    // Align
-                    var alignment = new VulkanImage(_ctx, (uint)tileInfo.NTilesX, (uint)tileInfo.NTilesY, Format.R16G16B16A16Sint,
+                    // Compute alignment vectors between reference and comparison pyramids
+                    var alignmentVectors = new VulkanImage(_ctx, (uint)alignmentTileInfo.TileCountX, (uint)alignmentTileInfo.TileCountY, Format.R16G16B16A16Sint,
                         ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit);
                     using (_profiler.MeasureStage("Alignment"))
                     {
-                        ExecuteAlignmentSearch(pyramid, altPyramid, alignment, tileInfo, 2);
+                        ExecuteAlignmentSearch(referencePyramid, comparisonPyramid, alignmentVectors, alignmentTileInfo, scale: 2);
                     }
-                    disposables.Add(alignment);
+                    disposableResources.Add(alignmentVectors);
 
-                    // Warp
-                    Console.WriteLine($"[VulkanComputePipeline] Warping Image {i}...");
-                    var warpedAlt = new VulkanImage(_ctx, preparedAlt.Width, preparedAlt.Height, Format.R32Sfloat,
+                    // Warp comparison frame to align with reference
+                    Console.WriteLine($"[VulkanComputePipeline] Warping Image {frameIndex}...");
+                    var warpedComparisonFrame = new VulkanImage(_ctx, preparedComparisonFrame.Width, preparedComparisonFrame.Height, Format.R32Sfloat,
                         ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
                     using (_profiler.MeasureStage("Warp"))
                     {
-                        ExecuteWarp(preparedAlt, warpedAlt, alignment, tileInfo, pad, pad);
+                        ExecuteWarp(preparedComparisonFrame, warpedComparisonFrame, alignmentVectors, alignmentTileInfo, paddingAmount, paddingAmount);
                     }
 
-                    // Merge (Spatial only)
-                    Console.WriteLine($"[VulkanComputePipeline] Merging Image {i}...");
-                    var expDiff = (float)(refImage.ExposureBias - altImage.ExposureBias);
+                    // Merge warped frame into accumulators (spatial weighted averaging)
+                    Console.WriteLine($"[VulkanComputePipeline] Merging Image {frameIndex}...");
+                    var exposureDifference = (float)(referenceImage.ExposureBias - comparisonImage.ExposureBias);
                     using (_profiler.MeasureStage("Merge"))
                     {
-                        ExecuteMerge(preparedTexture, warpedAlt, weightAccum!, pixelAccum!, refImage.WhiteLevel, 0.0f, options.NoiseReduction, estimatedNoiseSd, expDiff);
+                        ExecuteMerge(preparedTexture, warpedComparisonFrame, weightAccumulator!, pixelAccumulator!, referenceImage.WhiteLevel, blackLevel: 0.0f, options.NoiseReduction, estimatedNoiseStandardDeviation, exposureDifference);
                     }
 
-                    // Cleanup Alt Pyramid
-                    foreach (var p in altPyramid)
+                    // Cleanup comparison pyramid
+                    foreach (var pyramidLevel in comparisonPyramid)
                     {
-                        if (p != preparedAlt)
+                        if (pyramidLevel != preparedComparisonFrame)
                         {
-                            p.Dispose();
+                            pyramidLevel.Dispose();
                         }
                     }
-                    warpedAlt.Dispose();
+                    warpedComparisonFrame.Dispose();
                 }
             }
             _profiler.EndStage("SpatialMerge");
 
-            // Cleanup pyramid levels
-            for (var i = 1; i < pyramid.Count; i++)
+            // Cleanup reference pyramid levels (keep level 0 for debug dump)
+            for (var pyramidLevel = 1; pyramidLevel < referencePyramid.Count; pyramidLevel++)
             {
-                disposables.Add(pyramid[i]);
+                disposableResources.Add(referencePyramid[pyramidLevel]);
             }
 
             // DEBUG: Dump after all merges complete
-            _debugHelper.DumpTexture(pixelAccum!, "step_3_merge_accum_spatial", refImage, outWidth, outHeight, pad);
+            _debugHelper.DumpTexture(pixelAccumulator!, "step_3_merge_accum_spatial", referenceImage, paddedWidth, paddedHeight, paddingAmount);
 
-            // Normalize: result = pixelAccum / weightAccum (GPU - eliminates 2 GetData() calls!)
+            // Normalize: result = pixelAccumulator / weightAccumulator (GPU - eliminates 2 GetData() calls!)
             using (_profiler.MeasureStage("Normalize"))
             {
-                using var normalizedTexture = new VulkanImage(_ctx, (uint)outWidth, (uint)outHeight, Format.R32Sfloat,
+                using var normalizedTexture = new VulkanImage(_ctx, (uint)paddedWidth, (uint)paddedHeight, Format.R32Sfloat,
                     ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit);
-                _spatialMergePipeline.NormalizeAccumulators(pixelAccum!, weightAccum!, normalizedTexture);
-                floatData = normalizedTexture.GetData<float>();
+                _spatialMergePipeline.NormalizeAccumulators(pixelAccumulator!, weightAccumulator!, normalizedTexture);
+                outputFloatData = normalizedTexture.GetData<float>();
             }
         }
 
-        // --- Exposure Correction ---
+        #endregion
+
+        #region Post-Processing and Output
+
+        // Exposure Correction (optional)
         if (options.ExposureControl != ExposureControlOption.Off)
         {
             Console.WriteLine("[VulkanComputePipeline] Uploading for Exposure Correction...");
             using (_profiler.MeasureStage("ExposureCorrection"))
             {
-                using var exposureTexture = new VulkanImage(_ctx, (uint)outWidth, (uint)outHeight, Format.R32Sfloat,
+                using var exposureCorrectionTexture = new VulkanImage(_ctx, (uint)paddedWidth, (uint)paddedHeight, Format.R32Sfloat,
                     ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit | ImageUsageFlags.TransferSrcBit | ImageUsageFlags.TransferDstBit);
-                exposureTexture.SetData(floatData);
-                ExecuteExposureCorrection(exposureTexture, options.ExposureControl, refImage);
-                floatData = exposureTexture.GetData<float>();
+                exposureCorrectionTexture.SetData(outputFloatData);
+                ExecuteExposureCorrection(exposureCorrectionTexture, options.ExposureControl, referenceImage);
+                outputFloatData = exposureCorrectionTexture.GetData<float>();
 
-                _debugHelper.DumpTexture(exposureTexture, "step_6_exposure", refImage, outWidth, outHeight, pad);
+                _debugHelper.DumpTexture(exposureCorrectionTexture, "step_6_exposure", referenceImage, paddedWidth, paddedHeight, paddingAmount);
             }
         }
 
-        // 7. Convert back to RawImage (Crop back to original size)
+        // Convert back to RawImage (crop padding and convert to 16-bit)
         Console.WriteLine("[VulkanComputePipeline] Converting to Output...");
         _profiler.BeginStage("OutputConversion");
         var outputImage = new RawImage
         {
-            Width = width,
-            Height = height,
-            Data = new ushort[width * height],
-            MosaicPatternWidth = refImage.MosaicPatternWidth,
-            WhiteLevel = refImage.WhiteLevel,
-            BlackLevel = refImage.BlackLevel,
-            ExposureBias = refImage.ExposureBias,
-            IsoExposureTime = refImage.IsoExposureTime,
-            ColorFactors = refImage.ColorFactors,
-            SourcePath = refImage.SourcePath,
-            CfaPattern = refImage.CfaPattern,
-            ColorMatrix1 = refImage.ColorMatrix1,
-            ColorMatrix2 = refImage.ColorMatrix2,
-            CalibrationIlluminant1 = refImage.CalibrationIlluminant1,
-            CalibrationIlluminant2 = refImage.CalibrationIlluminant2,
-            AsShotNeutral = refImage.AsShotNeutral,
-            CameraMake = refImage.CameraMake,
-            CameraModel = refImage.CameraModel,
-            IsBayerData = refImage.IsBayerData
+            Width = imageWidth,
+            Height = imageHeight,
+            Data = new ushort[imageWidth * imageHeight],
+            MosaicPatternWidth = referenceImage.MosaicPatternWidth,
+            WhiteLevel = referenceImage.WhiteLevel,
+            BlackLevels = referenceImage.BlackLevels,
+            ExposureBias = referenceImage.ExposureBias,
+            IsoSpeedExposureTimeProduct = referenceImage.IsoSpeedExposureTimeProduct,
+            ColorChannelMultipliers = referenceImage.ColorChannelMultipliers,
+            SourcePath = referenceImage.SourcePath,
+            CfaPattern = referenceImage.CfaPattern,
+            ColorMatrix1 = referenceImage.ColorMatrix1,
+            ColorMatrix2 = referenceImage.ColorMatrix2,
+            CalibrationIlluminant1 = referenceImage.CalibrationIlluminant1,
+            CalibrationIlluminant2 = referenceImage.CalibrationIlluminant2,
+            AsShotNeutral = referenceImage.AsShotNeutral,
+            CameraMake = referenceImage.CameraMake,
+            CameraModel = referenceImage.CameraModel,
+            IsBayerData = referenceImage.IsBayerData
         };
 
-        var factor16Bit = 1.0f;
+        // Calculate scale factor for 16-bit output if requested
+        var bitDepthScaleFactor = 1.0f;
         if (options.OutputBitDepth == OutputBitDepthOption.Bit16)
         {
-            float maxVal = refImage.WhiteLevel;
-            factor16Bit = (float)Math.Pow(2.0, 16.0 - Math.Ceiling(Math.Log2(maxVal)));
+            float whiteLevelValue = referenceImage.WhiteLevel;
+            bitDepthScaleFactor = (float)Math.Pow(2.0, 16.0 - Math.Ceiling(Math.Log2(whiteLevelValue)));
         }
 
-        for (var y = 0; y < height; y++)
+        // Copy pixels from padded float buffer to output, cropping padding and converting to 16-bit
+        for (var pixelY = 0; pixelY < imageHeight; pixelY++)
         {
-            for (var x = 0; x < width; x++)
+            for (var pixelX = 0; pixelX < imageWidth; pixelX++)
             {
-                var srcIdx = (y + pad) * outWidth + (x + pad);
-                var dstIdx = y * width + x;
-                var val = floatData[srcIdx] * factor16Bit;
-                outputImage.Data[dstIdx] = (ushort)Math.Clamp(val, 0, 65535);
+                var sourceIndex = (pixelY + paddingAmount) * paddedWidth + (pixelX + paddingAmount);
+                var destinationIndex = pixelY * imageWidth + pixelX;
+                var scaledPixelValue = outputFloatData[sourceIndex] * bitDepthScaleFactor;
+                outputImage.Data[destinationIndex] = (ushort)Math.Clamp(scaledPixelValue, 0, MaxPixelValue16Bit);
             }
         }
 
+        // Update white level for 16-bit output
         if (options.OutputBitDepth == OutputBitDepthOption.Bit16)
         {
-            outputImage.WhiteLevel = (int)(refImage.WhiteLevel * factor16Bit);
-            if (outputImage.WhiteLevel > 65535)
+            outputImage.WhiteLevel = (int)(referenceImage.WhiteLevel * bitDepthScaleFactor);
+            if (outputImage.WhiteLevel > MaxPixelValue16Bit)
             {
-                outputImage.WhiteLevel = 65535;
+                outputImage.WhiteLevel = MaxPixelValue16Bit;
             }
         }
 
         _profiler.EndStage("OutputConversion");
 
-        foreach (var d in disposables)
+        // Dispose all accumulated resources
+        foreach (var resource in disposableResources)
         {
-            d.Dispose();
+            resource.Dispose();
         }
 
         // Print profiling results
@@ -854,6 +987,13 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         return outputImage;
     }
 
+    #endregion
+
+    #region Pipeline Setup Methods
+
+    /// <summary>
+    /// Ensures the Bayer preparation pipeline is initialized.
+    /// </summary>
     private void EnsurePreparePipeline()
     {
         if (_kernelPrepareBayer is not null)
@@ -865,6 +1005,9 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         _kernelPrepareBayer = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.PrepareBayer, _prepareLayout);
     }
 
+    /// <summary>
+    /// Ensures the Bayer-to-RGBA and RGBA-to-Bayer conversion pipelines are initialized.
+    /// </summary>
     private void EnsureConversionPipeline()
     {
         if (_kernelConvertToRgba is not null)
@@ -877,13 +1020,36 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         _kernelConvertToBayer = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.ConvertToBayer, _conversionLayout);
     }
 
-    private void ExecuteMergeFrequency(VulkanImage refFt, VulkanImage refPyramid0, VulkanImage aligned, VulkanImage weightAccum, VulkanImage pixelAccumFt,
-        float whiteLevel, float blackLevel, double noiseReduction, float noiseSd, float exposureDiff, int tileSize, int mosaicPatternWidth, int uniformExposure,
-        VulkanImage? totalMismatchTexture = null, int totalImageCount = 1, double exposureCorrRatio = 1.0)
-        => _frequencyMergePipeline.ExecuteMergeFrequency(refFt, refPyramid0, aligned, weightAccum, pixelAccumFt, whiteLevel, blackLevel, noiseReduction, noiseSd, exposureDiff, tileSize, mosaicPatternWidth, uniformExposure, totalMismatchTexture, totalImageCount, exposureCorrRatio);
+    #endregion
 
-    private void ExecuteBackwardFft(VulkanImage inputFt, VulkanImage outputSpatial, int numTextures, int tileSize)
-        => _frequencyMergePipeline.ExecuteBackwardFft(inputFt, outputSpatial, numTextures, tileSize);
+    #region Pipeline Execution Delegates
+
+    // These methods delegate to specialized pipeline classes for cleaner separation of concerns
+
+    private void ExecuteMergeFrequency(
+        VulkanImage referenceFourierTransform,
+        VulkanImage referenceRgba,
+        VulkanImage alignedComparisonRgba,
+        VulkanImage weightAccumulator,
+        VulkanImage accumulatedFourierTransform,
+        float whiteLevel,
+        float blackLevel,
+        double noiseReduction,
+        float noiseStandardDeviation,
+        float exposureDifference,
+        int tileSize,
+        int mosaicPatternWidth,
+        int isUniformExposure,
+        VulkanImage? totalMismatchTexture = null,
+        int totalImageCount = 1,
+        double exposureCorrectionRatio = 1.0)
+        => _frequencyMergePipeline.ExecuteMergeFrequency(
+            referenceFourierTransform, referenceRgba, alignedComparisonRgba, weightAccumulator, accumulatedFourierTransform,
+            whiteLevel, blackLevel, noiseReduction, noiseStandardDeviation, exposureDifference, tileSize, mosaicPatternWidth, isUniformExposure,
+            totalMismatchTexture, totalImageCount, exposureCorrectionRatio);
+
+    private void ExecuteBackwardFft(VulkanImage inputFourierTransform, VulkanImage outputSpatial, int textureCount, int tileSize)
+        => _frequencyMergePipeline.ExecuteBackwardFft(inputFourierTransform, outputSpatial, textureCount, tileSize);
 
     private List<ValidationResult> RunFftRoundTripValidation(VulkanImage rgbaInput, int tileSize)
         => _frequencyMergePipeline.RunFftRoundTripValidation(rgbaInput, tileSize);
@@ -892,59 +1058,54 @@ public unsafe class VulkanComputePipeline : IComputePipeline
         => _frequencyMergePipeline.ExecuteForwardFft(input, output, tileSize, width, height);
 
     private void ExecuteConvertToRgba(VulkanImage bayerInput, VulkanImage rgbaOutput, int[] cfaPattern, int cropX = 0, int cropY = 0)
-    {
-        _conversionHelper.ConvertToRgba(bayerInput, rgbaOutput, cfaPattern, _kernelConvertToRgba!, _conversionLayout, cropX, cropY);
-    }
+        => _conversionHelper.ConvertToRgba(bayerInput, rgbaOutput, cfaPattern, _kernelConvertToRgba!, _conversionLayout, cropX, cropY);
 
     private void ExecuteConvertToBayer(VulkanImage rgbaInput, VulkanImage bayerOutput, int[] cfaPattern)
-    {
-        _conversionHelper.ConvertToBayer(rgbaInput, bayerOutput, cfaPattern, _kernelConvertToBayer!, _conversionLayout);
-    }
+        => _conversionHelper.ConvertToBayer(rgbaInput, bayerOutput, cfaPattern, _kernelConvertToBayer!, _conversionLayout);
 
-    private void ExecuteCalculateRms(VulkanImage rgbaInput, VulkanImage rmsOutput, int nTilesX, int nTilesY, int tileSize)
-        => _frequencyMergePipeline.ExecuteCalculateRms(rgbaInput, rmsOutput, nTilesX, nTilesY, tileSize);
+    private void ExecuteCalculateRms(VulkanImage rgbaInput, VulkanImage rmsOutput, int tileCountX, int tileCountY, int tileSize)
+        => _frequencyMergePipeline.ExecuteCalculateRms(rgbaInput, rmsOutput, tileCountX, tileCountY, tileSize);
 
-    private void ExecuteDeconvoluteFrequency(VulkanImage finalTextureFt, VulkanImage mismatchTexture, int nTilesX, int nTilesY, int tileSize)
-        => _frequencyMergePipeline.ExecuteDeconvoluteFrequency(finalTextureFt, mismatchTexture, nTilesX, nTilesY, tileSize);
+    private void ExecuteDeconvoluteFrequency(VulkanImage accumulatedFourierTransform, VulkanImage mismatchTexture, int tileCountX, int tileCountY, int tileSize)
+        => _frequencyMergePipeline.ExecuteDeconvoluteFrequency(accumulatedFourierTransform, mismatchTexture, tileCountX, tileCountY, tileSize);
 
-    private void ExecuteReduceArtifacts(VulkanImage outputTexture, VulkanImage refTexture, int nTilesX, int nTilesY, int tileSize, int[] blackLevel)
-        => _frequencyMergePipeline.ExecuteReduceArtifacts(outputTexture, refTexture, nTilesX, nTilesY, tileSize, blackLevel);
+    private void ExecuteReduceArtifacts(VulkanImage outputTexture, VulkanImage referenceTexture, int tileCountX, int tileCountY, int tileSize, int[] blackLevels)
+        => _frequencyMergePipeline.ExecuteReduceArtifacts(outputTexture, referenceTexture, tileCountX, tileCountY, tileSize, blackLevels);
 
     /// <summary>
-    /// OPTIMIZED: Batched post-processing that combines deconvolute + backward FFT + reduce artifacts.
+    /// Executes optimized batched post-processing that combines deconvolution, backward FFT, and artifact reduction
+    /// into a single command buffer submission for improved GPU throughput.
     /// </summary>
     private void ExecutePostProcessingBatched(
-        VulkanImage finalTextureFt,
+        VulkanImage accumulatedFourierTransform,
         VulkanImage mismatchTexture,
         VulkanImage outputSpatial,
-        VulkanImage refTextureForArtifacts,
-        int nTilesX, int nTilesY, int tileSize, int numTextures, int[] blackLevel, bool skipReduceArtifacts)
+        VulkanImage referenceTextureForArtifacts,
+        int tileCountX, int tileCountY, int tileSize, int textureCount, int[] blackLevels, bool skipReduceArtifacts)
         => _frequencyMergePipeline.ExecutePostProcessingBatched(
-            finalTextureFt, mismatchTexture, outputSpatial, refTextureForArtifacts,
-            nTilesX, nTilesY, tileSize, numTextures, blackLevel, skipReduceArtifacts);
+            accumulatedFourierTransform, mismatchTexture, outputSpatial, referenceTextureForArtifacts,
+            tileCountX, tileCountY, tileSize, textureCount, blackLevels, skipReduceArtifacts);
 
-    private void ExecuteAvgPool(VulkanImage input, VulkanImage output, int scale, RawImage rawInfo, bool normalize = false)
-        => _alignmentPipeline.ExecuteAvgPool(input, output, scale, rawInfo, normalize);
+    private void ExecuteAvgPool(VulkanImage input, VulkanImage output, int scale, RawImage rawImageMetadata, bool normalize = false)
+        => _alignmentPipeline.ExecuteAvgPool(input, output, scale, rawImageMetadata, normalize);
 
-    private void ExecuteAlignmentSearch(List<VulkanImage> refPyramid, List<VulkanImage> compPyramid, VulkanImage alignmentOut, TileInfo baseTileInfo, int scale, bool uniformExposure = true)
-        => _alignmentPipeline.ExecuteAlignmentSearch(refPyramid, compPyramid, alignmentOut, baseTileInfo, scale, uniformExposure);
+    private void ExecuteAlignmentSearch(List<VulkanImage> referencePyramid, List<VulkanImage> comparisonPyramid, VulkanImage alignmentOutput, TileInfo baseTileInfo, int scale, bool uniformExposure = true)
+        => _alignmentPipeline.ExecuteAlignmentSearch(referencePyramid, comparisonPyramid, alignmentOutput, baseTileInfo, scale, uniformExposure);
 
-    private void ExecuteWarp(VulkanImage altImage, VulkanImage output, VulkanImage alignment, TileInfo tileInfo, int padLeft = 0, int padTop = 0)
-        => _alignmentPipeline.ExecuteWarp(altImage, output, alignment, tileInfo, padLeft, padTop);
+    private void ExecuteWarp(VulkanImage sourceImage, VulkanImage output, VulkanImage alignmentVectors, TileInfo tileInfo, int paddingLeft = 0, int paddingTop = 0)
+        => _alignmentPipeline.ExecuteWarp(sourceImage, output, alignmentVectors, tileInfo, paddingLeft, paddingTop);
 
-    private void ExecuteMerge(VulkanImage referenceFrame, VulkanImage warpedFrame, VulkanImage weightAccum, VulkanImage pixelAccum, float whiteLevel, float blackLevel, double noiseReduction, float noiseSd, float exposureDiff)
-        => _spatialMergePipeline.ExecuteMerge(referenceFrame, warpedFrame, weightAccum, pixelAccum, whiteLevel, blackLevel, noiseReduction, noiseSd, exposureDiff);
+    private void ExecuteMerge(VulkanImage referenceFrame, VulkanImage warpedFrame, VulkanImage weightAccumulator, VulkanImage pixelAccumulator, float whiteLevel, float blackLevel, double noiseReduction, float noiseStandardDeviation, float exposureDifference)
+        => _spatialMergePipeline.ExecuteMerge(referenceFrame, warpedFrame, weightAccumulator, pixelAccumulator, whiteLevel, blackLevel, noiseReduction, noiseStandardDeviation, exposureDifference);
 
-    private void ExecutePrepare(VulkanImage input, VulkanImage output, RawImage rawInfo, int padLeft, int padTop, int exposureDiff = 0)
-    {
-        _conversionHelper.Prepare(input, output, rawInfo, padLeft, padTop, _kernelPrepareBayer!, _prepareLayout, exposureDiff);
-    }
+    private void ExecutePrepare(VulkanImage input, VulkanImage output, RawImage rawImageMetadata, int paddingLeft, int paddingTop, int exposureDifference = 0)
+        => _conversionHelper.Prepare(input, output, rawImageMetadata, paddingLeft, paddingTop, _kernelPrepareBayer!, _prepareLayout, exposureDifference);
 
     private void ExecuteBlur(VulkanImage input, VulkanImage output, int kernelSize, int mosaicPatternWidth, VulkanImage? intermediate = null)
         => _exposurePipeline.ExecuteBlur(input, output, kernelSize, mosaicPatternWidth, intermediate);
 
-    private void ExecuteMaxReduction(VulkanImage input, VulkanBuffer outBuffer, int mosaicPatternWidth)
-        => _exposurePipeline.ExecuteMaxReduction(input, outBuffer, mosaicPatternWidth);
+    private void ExecuteMaxReduction(VulkanImage input, VulkanBuffer outputBuffer, int mosaicPatternWidth)
+        => _exposurePipeline.ExecuteMaxReduction(input, outputBuffer, mosaicPatternWidth);
 
     private void ExecuteExposureCorrection(VulkanImage image, ExposureControlOption option, RawImage metadata)
         => _exposurePipeline.ExecuteExposureCorrection(image, option, metadata);
@@ -952,29 +1113,35 @@ public unsafe class VulkanComputePipeline : IComputePipeline
     private float ExecuteNoiseEstimationGpu(VulkanImage inputTexture, int mosaicPatternWidth)
         => _exposurePipeline.ExecuteNoiseEstimationGpu(inputTexture, mosaicPatternWidth);
 
-    private float CalculateRobustness(double noiseReduction)
-    {
-        return (float)noiseReduction;
-    }
+    #endregion
 
+    #region IDisposable Implementation
+
+    /// <summary>
+    /// Releases all Vulkan resources held by this pipeline.
+    /// </summary>
     public void Dispose()
     {
+        // Wait for any pending GPU operations to complete before disposing
+        _ctx.Vk.DeviceWaitIdle(_ctx.Device);
+
+        // Dispose kernel manager first - this disposes all cached kernels
+        // NOTE: Do NOT dispose _kernelPrepareBayer, _kernelConvertToRgba, _kernelConvertToBayer
+        // directly as they are obtained from the kernel manager's cache and will be disposed there
+        _kernelManager.Dispose();
+
+        // Dispose descriptor manager (frees descriptor sets and pools)
         _descriptors.Dispose();
 
-        // Layouts managed by this class
-        if (_prepareLayout.Handle != 0)
-        {
-            _ctx.Vk.DestroyDescriptorSetLayout(_ctx.Device, _prepareLayout, null);
-        }
+        // Layouts are cached in kernel manager - don't double-dispose
+        // The kernel manager handles layout cleanup
 
-        if (_conversionLayout.Handle != 0)
-        {
-            _ctx.Vk.DestroyDescriptorSetLayout(_ctx.Device, _conversionLayout, null);
-        }
+        // Dispose shader compiler (the one owned by this class, not kernel manager's)
+        _compiler.Dispose();
 
-        // Kernels managed by this class
-        _kernelPrepareBayer?.Dispose();
-        _kernelConvertToRgba?.Dispose();
-        _kernelConvertToBayer?.Dispose();
+        // Finally dispose the Vulkan context (destroys device, instance, etc.)
+        _ctx.Dispose();
     }
+
+    #endregion
 }

@@ -88,10 +88,10 @@ public class PipelineDebugHelper
                 Data = outputData,
                 MosaicPatternWidth = refMeta.MosaicPatternWidth,
                 WhiteLevel = refMeta.WhiteLevel,
-                BlackLevel = refMeta.BlackLevel,
+                BlackLevels = refMeta.BlackLevels,
                 ExposureBias = refMeta.ExposureBias,
-                IsoExposureTime = refMeta.IsoExposureTime,
-                ColorFactors = refMeta.ColorFactors,
+                IsoSpeedExposureTimeProduct = refMeta.IsoSpeedExposureTimeProduct,
+                ColorChannelMultipliers = refMeta.ColorChannelMultipliers,
                 SourcePath = refMeta.SourcePath, // Critical for DngSdkWriter
                 CfaPattern = refMeta.CfaPattern,
                 ColorMatrix1 = refMeta.ColorMatrix1,
@@ -106,7 +106,7 @@ public class PipelineDebugHelper
 
             // Write using LibTiffDngWriter to avoid native dependency for debug dumps
             var writer = new BurstPhoto.Core.Implementations.LibTiffDngWriter();
-            writer.Write(outputPath, debugImage);
+            writer.Write(debugImage, outputPath);
 
             Console.WriteLine($"[DebugDump] Saved {stepName} successfully.");
         }
@@ -172,10 +172,10 @@ public class PipelineDebugHelper
                 Data = outputData,
                 MosaicPatternWidth = 2,
                 WhiteLevel = refMeta.WhiteLevel,
-                BlackLevel = refMeta.BlackLevel,
+                BlackLevels = refMeta.BlackLevels,
                 ExposureBias = refMeta.ExposureBias,
-                IsoExposureTime = refMeta.IsoExposureTime,
-                ColorFactors = refMeta.ColorFactors,
+                IsoSpeedExposureTimeProduct = refMeta.IsoSpeedExposureTimeProduct,
+                ColorChannelMultipliers = refMeta.ColorChannelMultipliers,
                 SourcePath = refMeta.SourcePath,
                 CfaPattern = refMeta.CfaPattern,
                 ColorMatrix1 = refMeta.ColorMatrix1,
@@ -189,7 +189,7 @@ public class PipelineDebugHelper
             };
 
             var writer = new BurstPhoto.Core.Implementations.LibTiffDngWriter();
-            writer.Write(outputPath, debugImage);
+            writer.Write(debugImage, outputPath);
 
             Console.WriteLine($"[DebugDump] Saved RGBA {stepName} ({bayerWidth}x{bayerHeight} Bayer) successfully.");
         }
@@ -275,10 +275,10 @@ public class PipelineDebugHelper
                 Data = outputData,
                 MosaicPatternWidth = 2,
                 WhiteLevel = 65535,
-                BlackLevel = refMeta.BlackLevel,
+                BlackLevels = refMeta.BlackLevels,
                 ExposureBias = 0,
-                IsoExposureTime = 1.0f,
-                ColorFactors = refMeta.ColorFactors,
+                IsoSpeedExposureTimeProduct = 1.0f,
+                ColorChannelMultipliers = refMeta.ColorChannelMultipliers,
                 SourcePath = refMeta.SourcePath,
                 CfaPattern = refMeta.CfaPattern,
                 ColorMatrix1 = refMeta.ColorMatrix1,
@@ -292,7 +292,7 @@ public class PipelineDebugHelper
             };
 
             var writer = new BurstPhoto.Core.Implementations.LibTiffDngWriter();
-            writer.Write(outputPath, debugImage);
+            writer.Write(debugImage, outputPath);
 
             Console.WriteLine($"[DebugDump] Saved alignment {stepName} ({bayerWidth}x{bayerHeight} Bayer) successfully.");
         }

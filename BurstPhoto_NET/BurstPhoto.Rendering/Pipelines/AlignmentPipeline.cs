@@ -6,26 +6,66 @@ namespace BurstPhoto.Rendering.Pipelines;
 
 /// <summary>
 /// Handles image alignment operations including pyramid building, alignment search, and warping.
-/// Extracted from VulkanComputePipeline for better code organization.
 /// </summary>
+/// <remarks>
+/// This pipeline implements a coarse-to-fine alignment strategy:
+/// <list type="number">
+///   <item><description>Build image pyramids by downsampling with average pooling</description></item>
+///   <item><description>Search for best alignment at coarsest level</description></item>
+///   <item><description>Refine alignment at finer levels using upsampled coarse results</description></item>
+///   <item><description>Apply final alignment vectors to warp comparison frame</description></item>
+/// </list>
+/// </remarks>
 public unsafe class AlignmentPipeline
 {
+    #region Constants
+
+    /// <summary>
+    /// Number of search positions evaluated in each dimension (5x5 = 25 total).
+    /// This gives a search range of +/- 2 pixels from the initial estimate.
+    /// </summary>
+    private const int SearchPositionsPerDimension = 5;
+
+    /// <summary>
+    /// Total number of search positions (5x5 grid).
+    /// </summary>
+    private const int TotalSearchPositions = SearchPositionsPerDimension * SearchPositionsPerDimension;
+
+    /// <summary>
+    /// Minimum tile size at the coarsest pyramid level.
+    /// </summary>
+    private const int MinimumTileSize = 8;
+
+    #endregion
+
+    #region Private Fields
+
     private readonly VulkanContext _ctx;
     private readonly VulkanDescriptorManager _descriptors;
     private readonly VulkanKernelManager _kernelManager;
 
-    // Cached kernels and layout
-    private DescriptorSetLayout _alignLayout;
-    private ComputeKernel? _kernelAvgPool;
-    private ComputeKernel? _kernelAvgPoolNormalization;
-    private ComputeKernel? _kernelTileDiff;
-    private ComputeKernel? _kernelTileDiff25;
-    private ComputeKernel? _kernelTileDiffExposure25;
-    private ComputeKernel? _kernelFindBest;
-    private ComputeKernel? _kernelWarp;
-    private ComputeKernel? _kernelUpsampleAlignment;
+    // Cached kernels and layout for alignment operations
+    private DescriptorSetLayout _alignmentDescriptorLayout;
+    private ComputeKernel? _kernelAveragePool;
+    private ComputeKernel? _kernelAveragePoolWithNormalization;
+    private ComputeKernel? _kernelComputeTileDifference;
+    private ComputeKernel? _kernelComputeTileDifference25Positions;
+    private ComputeKernel? _kernelComputeTileDifferenceExposure25Positions;
+    private ComputeKernel? _kernelFindBestAlignment;
+    private ComputeKernel? _kernelWarpImage;
+    private ComputeKernel? _kernelUpsampleAlignmentVectors;
     private ComputeKernel? _kernelCorrectUpsamplingError;
 
+    #endregion
+
+    #region Constructor
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="AlignmentPipeline"/> class.
+    /// </summary>
+    /// <param name="ctx">Vulkan context providing device and command pool access.</param>
+    /// <param name="descriptors">Descriptor manager for allocating descriptor sets.</param>
+    /// <param name="kernelManager">Kernel manager for creating and caching compute kernels.</param>
     public AlignmentPipeline(VulkanContext ctx, VulkanDescriptorManager descriptors, VulkanKernelManager kernelManager)
     {
         _ctx = ctx;
@@ -33,21 +73,32 @@ public unsafe class AlignmentPipeline
         _kernelManager = kernelManager;
     }
 
-    private void EnsureKernels()
-    {
-        if (_kernelAvgPool is not null) return;
+    #endregion
 
-        _alignLayout = _kernelManager.GetOrCreateLayout(PipelineKernelSpecs.AlignLayout);
-        _kernelAvgPool = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.AvgPool, _alignLayout);
-        _kernelAvgPoolNormalization = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.AvgPoolNormalization, _alignLayout);
-        _kernelTileDiff = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.TileDiff, _alignLayout);
-        _kernelTileDiff25 = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.TileDiff25, _alignLayout);
-        _kernelTileDiffExposure25 = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.TileDiffExposure25, _alignLayout);
-        _kernelFindBest = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.FindBest, _alignLayout);
-        _kernelWarp = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.Warp, _alignLayout);
-        _kernelUpsampleAlignment = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.UpsampleAlignment, _alignLayout);
-        _kernelCorrectUpsamplingError = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.CorrectUpsamplingError, _alignLayout);
+    #region Kernel Initialization
+
+    /// <summary>
+    /// Ensures all compute kernels are initialized (lazy initialization).
+    /// </summary>
+    private void EnsureKernelsInitialized()
+    {
+        if (_kernelAveragePool is not null) return;
+
+        _alignmentDescriptorLayout = _kernelManager.GetOrCreateLayout(PipelineKernelSpecs.AlignLayout);
+        _kernelAveragePool = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.AvgPool, _alignmentDescriptorLayout);
+        _kernelAveragePoolWithNormalization = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.AvgPoolNormalization, _alignmentDescriptorLayout);
+        _kernelComputeTileDifference = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.TileDiff, _alignmentDescriptorLayout);
+        _kernelComputeTileDifference25Positions = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.TileDiff25, _alignmentDescriptorLayout);
+        _kernelComputeTileDifferenceExposure25Positions = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.TileDiffExposure25, _alignmentDescriptorLayout);
+        _kernelFindBestAlignment = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.FindBest, _alignmentDescriptorLayout);
+        _kernelWarpImage = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.Warp, _alignmentDescriptorLayout);
+        _kernelUpsampleAlignmentVectors = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.UpsampleAlignment, _alignmentDescriptorLayout);
+        _kernelCorrectUpsamplingError = _kernelManager.GetOrCreateKernel(PipelineKernelSpecs.CorrectUpsamplingError, _alignmentDescriptorLayout);
     }
+
+    #endregion
+
+    #region Public Methods
 
     /// <summary>
     /// Builds a downsampled pyramid level using average pooling.
@@ -56,27 +107,27 @@ public unsafe class AlignmentPipeline
     /// <param name="output">Destination texture (should be half the size)</param>
     /// <param name="scale">Downscale factor (typically 2)</param>
     /// <param name="rawInfo">Raw image metadata for color factor normalization</param>
-    /// <param name="normalize">If true, applies color factor normalization (for level 0)</param>
+    /// <param name="normalize">If true, applies color factor normalization (used for level 0 only)</param>
     public void ExecuteAvgPool(VulkanImage input, VulkanImage output, int scale, RawImage rawInfo, bool normalize = false)
     {
-        EnsureKernels();
+        EnsureKernelsInitialized();
 
         // Compute color factors and black level for normalization (Swift: build_pyramid level 0)
         float factorRed = 1.0f, factorGreen = 1.0f, factorBlue = 1.0f;
         var blackLevelMean = 0.0f;
-        if (normalize && rawInfo.ColorFactors is not null && rawInfo.ColorFactors.Length >= 3)
+        if (normalize && rawInfo.ColorChannelMultipliers is not null && rawInfo.ColorChannelMultipliers.Length >= 3)
         {
-            if (rawInfo.ColorFactors.Length >= 4)
+            if (rawInfo.ColorChannelMultipliers.Length >= 4)
             {
-                factorRed = rawInfo.ColorFactors[0];
-                factorGreen = (rawInfo.ColorFactors[1] + rawInfo.ColorFactors[2]) / 2.0f;
-                factorBlue = rawInfo.ColorFactors[3];
+                factorRed = rawInfo.ColorChannelMultipliers[0];
+                factorGreen = (rawInfo.ColorChannelMultipliers[1] + rawInfo.ColorChannelMultipliers[2]) / 2.0f;
+                factorBlue = rawInfo.ColorChannelMultipliers[3];
             }
             else
             {
-                factorRed = rawInfo.ColorFactors[0];
-                factorGreen = rawInfo.ColorFactors[1];
-                factorBlue = rawInfo.ColorFactors[2];
+                factorRed = rawInfo.ColorChannelMultipliers[0];
+                factorGreen = rawInfo.ColorChannelMultipliers[1];
+                factorBlue = rawInfo.ColorChannelMultipliers[2];
             }
         }
 
@@ -93,8 +144,9 @@ public unsafe class AlignmentPipeline
             BufferUsageFlags.UniformBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
         paramBuffer.SetData([alignParams]);
 
-        using var dummyTex = new VulkanImage(_ctx, 1, 1, Format.R32Sfloat, ImageUsageFlags.SampledBit);
-        dummyTex.SetData(new float[] { 0 });
+        // Create dummy textures for unused shader bindings
+        using var placeholderTexture = new VulkanImage(_ctx, 1, 1, Format.R32Sfloat, ImageUsageFlags.SampledBit);
+        placeholderTexture.SetData(new float[] { 0 });
 
         var allocInfo = new CommandBufferAllocateInfo
         {
@@ -115,22 +167,22 @@ public unsafe class AlignmentPipeline
 
         input.TransitionLayout(ImageLayout.General, cmdBuffer);
         output.TransitionLayout(ImageLayout.General, cmdBuffer);
-        dummyTex.TransitionLayout(ImageLayout.General, cmdBuffer);
+        placeholderTexture.TransitionLayout(ImageLayout.General, cmdBuffer);
 
-        var set = _descriptors.Allocate(_alignLayout);
+        var descriptorSet = _descriptors.Allocate(_alignmentDescriptorLayout);
 
-        _descriptors.UpdateBuffer(set, ShaderBindings.Alignment.Params, paramBuffer.Handle, (ulong)Marshal.SizeOf<AlignParams>(), DescriptorType.UniformBuffer);
-        _descriptors.UpdateImage(set, ShaderBindings.Alignment.InTexture, input.View, ImageLayout.General, DescriptorType.SampledImage);
-        _descriptors.UpdateImage(set, ShaderBindings.Alignment.CompTexture, dummyTex.View, ImageLayout.General, DescriptorType.SampledImage);
-        _descriptors.UpdateImage(set, ShaderBindings.Alignment.AlignmentVectors, dummyTex.View, ImageLayout.General, DescriptorType.SampledImage);
-        _descriptors.UpdateImage(set, ShaderBindings.Alignment.Output, output.View, ImageLayout.General, DescriptorType.StorageImage);
+        _descriptors.UpdateBuffer(descriptorSet, ShaderBindings.Alignment.Params, paramBuffer.Handle, (ulong)Marshal.SizeOf<AlignParams>(), DescriptorType.UniformBuffer);
+        _descriptors.UpdateImage(descriptorSet, ShaderBindings.Alignment.InTexture, input.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(descriptorSet, ShaderBindings.Alignment.CompTexture, placeholderTexture.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(descriptorSet, ShaderBindings.Alignment.AlignmentVectors, placeholderTexture.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(descriptorSet, ShaderBindings.Alignment.Output, output.View, ImageLayout.General, DescriptorType.StorageImage);
 
-        var kernel = normalize ? _kernelAvgPoolNormalization! : _kernelAvgPool!;
-        kernel.BindPipeline(cmdBuffer);
+        var averagePoolKernel = normalize ? _kernelAveragePoolWithNormalization! : _kernelAveragePool!;
+        averagePoolKernel.BindPipeline(cmdBuffer);
 
-        _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, kernel.PipelineLayout, 0, 1, &set, 0, null);
+        _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, averagePoolKernel.PipelineLayout, 0, 1, &descriptorSet, 0, null);
 
-        kernel.Dispatch(cmdBuffer, output.Width, output.Height, 1);
+        averagePoolKernel.Dispatch(cmdBuffer, output.Width, output.Height, 1);
 
         _ctx.Vk.EndCommandBuffer(cmdBuffer);
 
@@ -155,210 +207,218 @@ public unsafe class AlignmentPipeline
     /// <param name="alignmentOut">Output alignment vectors texture</param>
     /// <param name="baseTileInfo">Tile configuration at finest level</param>
     /// <param name="scale">Scale factor</param>
-    /// <param name="uniformExposure">Whether images have uniform exposure</param>
-    public void ExecuteAlignmentSearch(List<VulkanImage> refPyramid, List<VulkanImage> compPyramid, VulkanImage alignmentOut, TileInfo baseTileInfo, int scale, bool uniformExposure = true)
+    /// <param name="uniformExposure">Whether images have uniform exposure (affects difference calculation)</param>
+    public void ExecuteAlignmentSearch(List<VulkanImage> referencePyramid, List<VulkanImage> comparisonPyramid, VulkanImage alignmentOutput, TileInfo baseTileInfo, int scale, bool uniformExposure = true)
     {
-        EnsureKernels();
+        EnsureKernelsInitialized();
 
-        var numLevels = Math.Min(refPyramid.Count, compPyramid.Count);
+        var pyramidLevelCount = Math.Min(referencePyramid.Count, comparisonPyramid.Count);
 
-        Console.WriteLine($"[Align] ExecuteAlignmentSearch: Levels={numLevels}, BaseTileSize={baseTileInfo.TileSize}");
+        Console.WriteLine($"[Align] ExecuteAlignmentSearch: Levels={pyramidLevelCount}, BaseTileSize={baseTileInfo.TileSize}");
 
-        // Calculate tile sizes for each level
-        var tileSizes = new int[numLevels];
-        tileSizes[0] = baseTileInfo.TileSize;
-        for (var i = 1; i < numLevels; i++)
+        // Calculate tile sizes for each pyramid level (halving at each level, minimum 8)
+        var tileSizesPerLevel = new int[pyramidLevelCount];
+        tileSizesPerLevel[0] = baseTileInfo.TileSize;
+        for (var levelIndex = 1; levelIndex < pyramidLevelCount; levelIndex++)
         {
-            tileSizes[i] = Math.Max(tileSizes[i - 1] / 2, 8);
+            tileSizesPerLevel[levelIndex] = Math.Max(tileSizesPerLevel[levelIndex - 1] / 2, MinimumTileSize);
         }
 
-        VulkanImage? prevAlignment = null;
+        VulkanImage? previousLevelAlignment = null;
 
-        // Loop from coarsest to finest
-        for (var level = numLevels - 1; level >= 0; level--)
+        // Process from coarsest to finest level (coarse-to-fine refinement)
+        for (var currentLevel = pyramidLevelCount - 1; currentLevel >= 0; currentLevel--)
         {
-            var refLayer = refPyramid[level];
-            var compLayer = compPyramid[level];
-            var tileSize = tileSizes[level];
+            var referenceLayerImage = referencePyramid[currentLevel];
+            var comparisonLayerImage = comparisonPyramid[currentLevel];
+            var tileSizeForLevel = tileSizesPerLevel[currentLevel];
 
             // Calculate tile grid dimensions for this level
-            var nTilesX = (int)refLayer.Width / (tileSize / 2) - 1;
-            var nTilesY = (int)refLayer.Height / (tileSize / 2) - 1;
+            // Tiles overlap by 50% (stride = tileSize/2)
+            var tileCountX = (int)referenceLayerImage.Width / (tileSizeForLevel / 2) - 1;
+            var tileCountY = (int)referenceLayerImage.Height / (tileSizeForLevel / 2) - 1;
 
-            if (nTilesX < 1) nTilesX = 1;
-            if (nTilesY < 1) nTilesY = 1;
+            if (tileCountX < 1) tileCountX = 1;
+            if (tileCountY < 1) tileCountY = 1;
 
-            Console.WriteLine($"[Align] Level {level}: {refLayer.Width}x{refLayer.Height}, TileSize={tileSize}, Grid={nTilesX}x{nTilesY}");
+            Console.WriteLine($"[Align] Level {currentLevel}: {referenceLayerImage.Width}x{referenceLayerImage.Height}, TileSize={tileSizeForLevel}, Grid={tileCountX}x{tileCountY}");
 
-            VulkanImage currentAlignment;
-            var isLastLevel = (level == 0);
+            VulkanImage currentLevelAlignment;
+            var isFinestLevel = (currentLevel == 0);
 
-            currentAlignment = isLastLevel ? alignmentOut :
-                new VulkanImage(_ctx, (uint)nTilesX, (uint)nTilesY, Format.R16G16B16A16Sint, ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit);
+            // Use final output for finest level, otherwise create temporary storage
+            currentLevelAlignment = isFinestLevel ? alignmentOutput :
+                new VulkanImage(_ctx, (uint)tileCountX, (uint)tileCountY, Format.R16G16B16A16Sint, ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit);
 
-            var allocInfo = new CommandBufferAllocateInfo { SType = StructureType.CommandBufferAllocateInfo, Level = CommandBufferLevel.Primary, CommandPool = _ctx.CommandPool, CommandBufferCount = 1 };
-            _ctx.Vk.AllocateCommandBuffers(_ctx.Device, in allocInfo, out var cmdBuffer);
-            var beginInfo = new CommandBufferBeginInfo { SType = StructureType.CommandBufferBeginInfo, Flags = CommandBufferUsageFlags.OneTimeSubmitBit };
-            _ctx.Vk.BeginCommandBuffer(cmdBuffer, in beginInfo);
+            var commandBufferAllocInfo = new CommandBufferAllocateInfo { SType = StructureType.CommandBufferAllocateInfo, Level = CommandBufferLevel.Primary, CommandPool = _ctx.CommandPool, CommandBufferCount = 1 };
+            _ctx.Vk.AllocateCommandBuffers(_ctx.Device, in commandBufferAllocInfo, out var cmdBuffer);
+            var commandBeginInfo = new CommandBufferBeginInfo { SType = StructureType.CommandBufferBeginInfo, Flags = CommandBufferUsageFlags.OneTimeSubmitBit };
+            _ctx.Vk.BeginCommandBuffer(cmdBuffer, in commandBeginInfo);
 
-            var levelDisposables = new List<IDisposable>();
+            var levelResources = new List<IDisposable>();
 
-            // 1. Prepare "Previous Alignment" for this level
-            VulkanImage prevAlignmentForStep;
+            // Step 1: Prepare initial alignment estimate from previous (coarser) level
+            VulkanImage initialAlignmentEstimate;
 
-            if (prevAlignment is null)
+            if (previousLevelAlignment is null)
             {
-                // Coarsest Level: Create Zeros
-                var zeroAlign = new VulkanImage(_ctx, (uint)nTilesX, (uint)nTilesY, Format.R16G16B16A16Sint, ImageUsageFlags.SampledBit | ImageUsageFlags.StorageBit);
-                levelDisposables.Add(zeroAlign);
+                // At coarsest level: start with zero alignment (no motion estimate)
+                var zeroAlignmentTexture = new VulkanImage(_ctx, (uint)tileCountX, (uint)tileCountY, Format.R16G16B16A16Sint, ImageUsageFlags.SampledBit | ImageUsageFlags.StorageBit);
+                levelResources.Add(zeroAlignmentTexture);
 
-                var totalTiles = nTilesX * nTilesY;
-                var zeros = new short[totalTiles * 4];
-                zeroAlign.SetData(zeros);
-                zeroAlign.TransitionLayout(ImageLayout.General, cmdBuffer);
+                var totalTileElements = tileCountX * tileCountY * 4; // 4 components per tile (RGBA16)
+                var zeroAlignmentData = new short[totalTileElements];
+                zeroAlignmentTexture.SetData(zeroAlignmentData);
+                zeroAlignmentTexture.TransitionLayout(ImageLayout.General, cmdBuffer);
 
-                prevAlignmentForStep = zeroAlign;
+                initialAlignmentEstimate = zeroAlignmentTexture;
             }
             else
             {
-                // Upsample from previous coarser level
-                var upsampled = new VulkanImage(_ctx, (uint)nTilesX, (uint)nTilesY, Format.R16G16B16A16Sint, ImageUsageFlags.SampledBit | ImageUsageFlags.StorageBit);
-                levelDisposables.Add(upsampled);
+                // Upsample alignment from previous (coarser) level to current grid
+                var upsampledAlignment = new VulkanImage(_ctx, (uint)tileCountX, (uint)tileCountY, Format.R16G16B16A16Sint, ImageUsageFlags.SampledBit | ImageUsageFlags.StorageBit);
+                levelResources.Add(upsampledAlignment);
 
-                prevAlignment.TransitionLayout(ImageLayout.General, cmdBuffer);
-                upsampled.TransitionLayout(ImageLayout.General, cmdBuffer);
+                previousLevelAlignment.TransitionLayout(ImageLayout.General, cmdBuffer);
+                upsampledAlignment.TransitionLayout(ImageLayout.General, cmdBuffer);
 
-                var setUp = _descriptors.Allocate(_alignLayout);
-                var dummyParams = new AlignParams();
-                using var pBuff = new VulkanBuffer(_ctx, (ulong)Marshal.SizeOf<AlignParams>(), BufferUsageFlags.UniformBufferBit, MemoryPropertyFlags.HostVisibleBit);
-                pBuff.SetData([dummyParams]);
+                var upsampleDescriptorSet = _descriptors.Allocate(_alignmentDescriptorLayout);
+                var emptyParams = new AlignParams();
+                using var upsampleParamBuffer = new VulkanBuffer(_ctx, (ulong)Marshal.SizeOf<AlignParams>(), BufferUsageFlags.UniformBufferBit, MemoryPropertyFlags.HostVisibleBit);
+                upsampleParamBuffer.SetData([emptyParams]);
 
-                using var dummyTex = new VulkanImage(_ctx, 1, 1, Format.R32Sfloat, ImageUsageFlags.SampledBit);
-                dummyTex.TransitionLayout(ImageLayout.General, cmdBuffer);
+                using var placeholderTexture = new VulkanImage(_ctx, 1, 1, Format.R32Sfloat, ImageUsageFlags.SampledBit);
+                placeholderTexture.TransitionLayout(ImageLayout.General, cmdBuffer);
 
-                _descriptors.UpdateBuffer(setUp, 0, pBuff.Handle, (ulong)Marshal.SizeOf<AlignParams>(), DescriptorType.UniformBuffer);
-                _descriptors.UpdateImage(setUp, 1, dummyTex.View, ImageLayout.General, DescriptorType.SampledImage);
-                _descriptors.UpdateImage(setUp, 2, dummyTex.View, ImageLayout.General, DescriptorType.SampledImage);
-                _descriptors.UpdateImage(setUp, 3, prevAlignment.View, ImageLayout.General, DescriptorType.SampledImage);
-                _descriptors.UpdateImage(setUp, 10, upsampled.View, ImageLayout.General, DescriptorType.StorageImage);
+                _descriptors.UpdateBuffer(upsampleDescriptorSet, 0, upsampleParamBuffer.Handle, (ulong)Marshal.SizeOf<AlignParams>(), DescriptorType.UniformBuffer);
+                _descriptors.UpdateImage(upsampleDescriptorSet, 1, placeholderTexture.View, ImageLayout.General, DescriptorType.SampledImage);
+                _descriptors.UpdateImage(upsampleDescriptorSet, 2, placeholderTexture.View, ImageLayout.General, DescriptorType.SampledImage);
+                _descriptors.UpdateImage(upsampleDescriptorSet, 3, previousLevelAlignment.View, ImageLayout.General, DescriptorType.SampledImage);
+                _descriptors.UpdateImage(upsampleDescriptorSet, 10, upsampledAlignment.View, ImageLayout.General, DescriptorType.StorageImage);
 
-                _kernelUpsampleAlignment!.BindPipeline(cmdBuffer);
-                _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, _kernelUpsampleAlignment.PipelineLayout, 0, 1, &setUp, 0, null);
+                _kernelUpsampleAlignmentVectors!.BindPipeline(cmdBuffer);
+                _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, _kernelUpsampleAlignmentVectors.PipelineLayout, 0, 1, &upsampleDescriptorSet, 0, null);
 
-                _kernelUpsampleAlignment.Dispatch(cmdBuffer, (uint)nTilesX, (uint)nTilesY, 1);
+                _kernelUpsampleAlignmentVectors.Dispatch(cmdBuffer, (uint)tileCountX, (uint)tileCountY, 1);
 
-                var barrier = new MemoryBarrier { SType = StructureType.MemoryBarrier, SrcAccessMask = AccessFlags.ShaderWriteBit, DstAccessMask = AccessFlags.ShaderReadBit };
-                _ctx.Vk.CmdPipelineBarrier(cmdBuffer, PipelineStageFlags.ComputeShaderBit, PipelineStageFlags.ComputeShaderBit, 0, 1, &barrier, 0, null, 0, null);
+                var upsampleBarrier = new MemoryBarrier { SType = StructureType.MemoryBarrier, SrcAccessMask = AccessFlags.ShaderWriteBit, DstAccessMask = AccessFlags.ShaderReadBit };
+                _ctx.Vk.CmdPipelineBarrier(cmdBuffer, PipelineStageFlags.ComputeShaderBit, PipelineStageFlags.ComputeShaderBit, 0, 1, &upsampleBarrier, 0, null, 0, null);
 
-                prevAlignmentForStep = upsampled;
+                initialAlignmentEstimate = upsampledAlignment;
             }
 
-            // 2. Correct Upsampling Error
-            var corrected = new VulkanImage(_ctx, (uint)nTilesX, (uint)nTilesY, Format.R16G16B16A16Sint, ImageUsageFlags.SampledBit | ImageUsageFlags.StorageBit);
-            levelDisposables.Add(corrected);
-            corrected.TransitionLayout(ImageLayout.General, cmdBuffer);
+            // Step 2: Correct upsampling error by refining initial estimate
+            var correctedAlignment = new VulkanImage(_ctx, (uint)tileCountX, (uint)tileCountY, Format.R16G16B16A16Sint, ImageUsageFlags.SampledBit | ImageUsageFlags.StorageBit);
+            levelResources.Add(correctedAlignment);
+            correctedAlignment.TransitionLayout(ImageLayout.General, cmdBuffer);
 
-            var alignParams = new AlignParams
+            var alignmentParams = new AlignParams
             {
-                TileSize = tileSize,
+                TileSize = tileSizeForLevel,
                 DownscaleFactor = 2,
-                NumTilesX = nTilesX,
-                NumTilesY = nTilesY,
+                NumTilesX = tileCountX,
+                NumTilesY = tileCountY,
                 UniformExposure = uniformExposure ? 1 : 0,
             };
 
-            using var paramBuffer = new VulkanBuffer(_ctx, (ulong)Marshal.SizeOf<AlignParams>(), BufferUsageFlags.UniformBufferBit, MemoryPropertyFlags.HostVisibleBit);
-            paramBuffer.SetData([alignParams]);
+            using var alignmentParamBuffer = new VulkanBuffer(_ctx, (ulong)Marshal.SizeOf<AlignParams>(), BufferUsageFlags.UniformBufferBit, MemoryPropertyFlags.HostVisibleBit);
+            alignmentParamBuffer.SetData([alignmentParams]);
 
-            refLayer.TransitionLayout(ImageLayout.General, cmdBuffer);
-            compLayer.TransitionLayout(ImageLayout.General, cmdBuffer);
+            referenceLayerImage.TransitionLayout(ImageLayout.General, cmdBuffer);
+            comparisonLayerImage.TransitionLayout(ImageLayout.General, cmdBuffer);
 
-            var setCorrect = _descriptors.Allocate(_alignLayout);
-            _descriptors.UpdateBuffer(setCorrect, 0, paramBuffer.Handle, (ulong)Marshal.SizeOf<AlignParams>(), DescriptorType.UniformBuffer);
-            _descriptors.UpdateImage(setCorrect, 1, refLayer.View, ImageLayout.General, DescriptorType.SampledImage);
-            _descriptors.UpdateImage(setCorrect, 2, compLayer.View, ImageLayout.General, DescriptorType.SampledImage);
-            _descriptors.UpdateImage(setCorrect, 3, prevAlignmentForStep.View, ImageLayout.General, DescriptorType.SampledImage);
-            _descriptors.UpdateImage(setCorrect, 10, corrected.View, ImageLayout.General, DescriptorType.StorageImage);
+            var correctionDescriptorSet = _descriptors.Allocate(_alignmentDescriptorLayout);
+            _descriptors.UpdateBuffer(correctionDescriptorSet, 0, alignmentParamBuffer.Handle, (ulong)Marshal.SizeOf<AlignParams>(), DescriptorType.UniformBuffer);
+            _descriptors.UpdateImage(correctionDescriptorSet, 1, referenceLayerImage.View, ImageLayout.General, DescriptorType.SampledImage);
+            _descriptors.UpdateImage(correctionDescriptorSet, 2, comparisonLayerImage.View, ImageLayout.General, DescriptorType.SampledImage);
+            _descriptors.UpdateImage(correctionDescriptorSet, 3, initialAlignmentEstimate.View, ImageLayout.General, DescriptorType.SampledImage);
+            _descriptors.UpdateImage(correctionDescriptorSet, 10, correctedAlignment.View, ImageLayout.General, DescriptorType.StorageImage);
 
             _kernelCorrectUpsamplingError!.BindPipeline(cmdBuffer);
-            _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, _kernelCorrectUpsamplingError.PipelineLayout, 0, 1, &setCorrect, 0, null);
+            _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, _kernelCorrectUpsamplingError.PipelineLayout, 0, 1, &correctionDescriptorSet, 0, null);
 
-            _kernelCorrectUpsamplingError.Dispatch(cmdBuffer, (uint)nTilesX, (uint)nTilesY, 1);
+            _kernelCorrectUpsamplingError.Dispatch(cmdBuffer, (uint)tileCountX, (uint)tileCountY, 1);
 
-            var barrier2 = new MemoryBarrier { SType = StructureType.MemoryBarrier, SrcAccessMask = AccessFlags.ShaderWriteBit, DstAccessMask = AccessFlags.ShaderReadBit };
-            _ctx.Vk.CmdPipelineBarrier(cmdBuffer, PipelineStageFlags.ComputeShaderBit, PipelineStageFlags.ComputeShaderBit, 0, 1, &barrier2, 0, null, 0, null);
+            var correctionBarrier = new MemoryBarrier { SType = StructureType.MemoryBarrier, SrcAccessMask = AccessFlags.ShaderWriteBit, DstAccessMask = AccessFlags.ShaderReadBit };
+            _ctx.Vk.CmdPipelineBarrier(cmdBuffer, PipelineStageFlags.ComputeShaderBit, PipelineStageFlags.ComputeShaderBit, 0, 1, &correctionBarrier, 0, null, 0, null);
 
-            // 3. Compute Tile Differences
-            var nPos2D = 25;
-            var tileDiff = new VulkanImage(_ctx, (uint)nPos2D, (uint)nTilesX, (uint)nTilesY, Format.R32Sfloat, ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit, ImageViewType.Type3D);
-            levelDisposables.Add(tileDiff);
-            tileDiff.TransitionLayout(ImageLayout.General, cmdBuffer);
+            // Step 3: Compute tile differences for all search positions
+            // Creates a 3D texture: [searchPositions x tileCountX x tileCountY]
+            var tileDifferenceVolume = new VulkanImage(_ctx, (uint)TotalSearchPositions, (uint)tileCountX, (uint)tileCountY, Format.R32Sfloat, ImageUsageFlags.StorageBit | ImageUsageFlags.SampledBit, ImageViewType.Type3D);
+            levelResources.Add(tileDifferenceVolume);
+            tileDifferenceVolume.TransitionLayout(ImageLayout.General, cmdBuffer);
 
-            alignParams.SearchDist = 2;
-            alignParams.WeightSSD = (level == 0) ? 0 : 1;
-            paramBuffer.SetData([alignParams]);
+            alignmentParams.SearchDist = 2; // Search +/- 2 pixels in each direction
+            alignmentParams.WeightSSD = (currentLevel == 0) ? 0 : 1; // Use SSD weighting for coarser levels
+            alignmentParamBuffer.SetData([alignmentParams]);
 
-            var setDiff = _descriptors.Allocate(_alignLayout);
-            _descriptors.UpdateBuffer(setDiff, 0, paramBuffer.Handle, (ulong)Marshal.SizeOf<AlignParams>(), DescriptorType.UniformBuffer);
-            _descriptors.UpdateImage(setDiff, 1, refLayer.View, ImageLayout.General, DescriptorType.SampledImage);
-            _descriptors.UpdateImage(setDiff, 2, compLayer.View, ImageLayout.General, DescriptorType.SampledImage);
-            _descriptors.UpdateImage(setDiff, 3, corrected.View, ImageLayout.General, DescriptorType.SampledImage);
-            _descriptors.UpdateImage(setDiff, 10, tileDiff.View, ImageLayout.General, DescriptorType.StorageImage);
+            var differenceDescriptorSet = _descriptors.Allocate(_alignmentDescriptorLayout);
+            _descriptors.UpdateBuffer(differenceDescriptorSet, 0, alignmentParamBuffer.Handle, (ulong)Marshal.SizeOf<AlignParams>(), DescriptorType.UniformBuffer);
+            _descriptors.UpdateImage(differenceDescriptorSet, 1, referenceLayerImage.View, ImageLayout.General, DescriptorType.SampledImage);
+            _descriptors.UpdateImage(differenceDescriptorSet, 2, comparisonLayerImage.View, ImageLayout.General, DescriptorType.SampledImage);
+            _descriptors.UpdateImage(differenceDescriptorSet, 3, correctedAlignment.View, ImageLayout.General, DescriptorType.SampledImage);
+            _descriptors.UpdateImage(differenceDescriptorSet, 10, tileDifferenceVolume.View, ImageLayout.General, DescriptorType.StorageImage);
 
-            var kernelDiff = uniformExposure ? _kernelTileDiff25! : _kernelTileDiffExposure25!;
-            kernelDiff.BindPipeline(cmdBuffer);
-            _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, kernelDiff.PipelineLayout, 0, 1, &setDiff, 0, null);
+            var tileDifferenceKernel = uniformExposure ? _kernelComputeTileDifference25Positions! : _kernelComputeTileDifferenceExposure25Positions!;
+            tileDifferenceKernel.BindPipeline(cmdBuffer);
+            _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, tileDifferenceKernel.PipelineLayout, 0, 1, &differenceDescriptorSet, 0, null);
 
-            kernelDiff.Dispatch(cmdBuffer, (uint)nTilesX, (uint)nTilesY, 1);
+            tileDifferenceKernel.Dispatch(cmdBuffer, (uint)tileCountX, (uint)tileCountY, 1);
 
-            _ctx.Vk.CmdPipelineBarrier(cmdBuffer, PipelineStageFlags.ComputeShaderBit, PipelineStageFlags.ComputeShaderBit, 0, 1, &barrier2, 0, null, 0, null);
+            _ctx.Vk.CmdPipelineBarrier(cmdBuffer, PipelineStageFlags.ComputeShaderBit, PipelineStageFlags.ComputeShaderBit, 0, 1, &correctionBarrier, 0, null, 0, null);
 
-            // 4. Find Best Alignment
-            if (isLastLevel)
+            // Step 4: Find best alignment by selecting minimum difference position
+            if (isFinestLevel)
             {
-                alignmentOut.TransitionLayout(ImageLayout.General, cmdBuffer);
+                alignmentOutput.TransitionLayout(ImageLayout.General, cmdBuffer);
             }
             else
             {
-                currentAlignment.TransitionLayout(ImageLayout.General, cmdBuffer);
+                currentLevelAlignment.TransitionLayout(ImageLayout.General, cmdBuffer);
             }
 
-            var setFind = _descriptors.Allocate(_alignLayout);
-            _descriptors.UpdateBuffer(setFind, 0, paramBuffer.Handle, (ulong)Marshal.SizeOf<AlignParams>(), DescriptorType.UniformBuffer);
-            _descriptors.UpdateImage(setFind, 1, tileDiff.View, ImageLayout.General, DescriptorType.SampledImage);
+            var findBestDescriptorSet = _descriptors.Allocate(_alignmentDescriptorLayout);
+            _descriptors.UpdateBuffer(findBestDescriptorSet, 0, alignmentParamBuffer.Handle, (ulong)Marshal.SizeOf<AlignParams>(), DescriptorType.UniformBuffer);
+            _descriptors.UpdateImage(findBestDescriptorSet, 1, tileDifferenceVolume.View, ImageLayout.General, DescriptorType.SampledImage);
 
-            using var dummyComp2 = new VulkanImage(_ctx, 1, 1, Format.R32Sfloat, ImageUsageFlags.SampledBit);
-            dummyComp2.TransitionLayout(ImageLayout.General, cmdBuffer);
-            _descriptors.UpdateImage(setFind, 2, dummyComp2.View, ImageLayout.General, DescriptorType.SampledImage);
+            using var unusedPlaceholder = new VulkanImage(_ctx, 1, 1, Format.R32Sfloat, ImageUsageFlags.SampledBit);
+            unusedPlaceholder.TransitionLayout(ImageLayout.General, cmdBuffer);
+            _descriptors.UpdateImage(findBestDescriptorSet, 2, unusedPlaceholder.View, ImageLayout.General, DescriptorType.SampledImage);
 
-            _descriptors.UpdateImage(setFind, 3, corrected.View, ImageLayout.General, DescriptorType.SampledImage);
-            _descriptors.UpdateImage(setFind, 10, currentAlignment.View, ImageLayout.General, DescriptorType.StorageImage);
+            _descriptors.UpdateImage(findBestDescriptorSet, 3, correctedAlignment.View, ImageLayout.General, DescriptorType.SampledImage);
+            _descriptors.UpdateImage(findBestDescriptorSet, 10, currentLevelAlignment.View, ImageLayout.General, DescriptorType.StorageImage);
 
-            _kernelFindBest!.BindPipeline(cmdBuffer);
-            _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, _kernelFindBest.PipelineLayout, 0, 1, &setFind, 0, null);
+            _kernelFindBestAlignment!.BindPipeline(cmdBuffer);
+            _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, _kernelFindBestAlignment.PipelineLayout, 0, 1, &findBestDescriptorSet, 0, null);
 
-            _kernelFindBest.Dispatch(cmdBuffer, (uint)nTilesX, (uint)nTilesY, 1);
+            _kernelFindBestAlignment.Dispatch(cmdBuffer, (uint)tileCountX, (uint)tileCountY, 1);
 
             _ctx.Vk.EndCommandBuffer(cmdBuffer);
 
-            var submitInfo = new SubmitInfo { SType = StructureType.SubmitInfo, CommandBufferCount = 1, PCommandBuffers = &cmdBuffer };
-            _ctx.Vk.QueueSubmit(_ctx.ComputeQueue, 1, in submitInfo, default);
+            var queueSubmitInfo = new SubmitInfo { SType = StructureType.SubmitInfo, CommandBufferCount = 1, PCommandBuffers = &cmdBuffer };
+            _ctx.Vk.QueueSubmit(_ctx.ComputeQueue, 1, in queueSubmitInfo, default);
             _ctx.Vk.QueueWaitIdle(_ctx.ComputeQueue);
 
             _ctx.Vk.FreeCommandBuffers(_ctx.Device, _ctx.CommandPool, 1, in cmdBuffer);
 
-            foreach (var d in levelDisposables)
+            // Cleanup level-specific resources
+            foreach (var resource in levelResources)
             {
-                d.Dispose();
+                resource.Dispose();
             }
 
-            if (prevAlignment is not null && prevAlignment != alignmentOut)
+            // Dispose previous level alignment (unless it's the final output)
+            if (previousLevelAlignment is not null && previousLevelAlignment != alignmentOutput)
             {
-                prevAlignment.Dispose();
+                previousLevelAlignment.Dispose();
             }
-            prevAlignment = currentAlignment;
+            previousLevelAlignment = currentLevelAlignment;
         }
     }
+
+    #endregion
+
+    #region Warp Operations
 
     /// <summary>
     /// Warps the input texture using alignment vectors.
@@ -368,74 +428,74 @@ public unsafe class AlignmentPipeline
     /// <param name="alignment">Alignment vectors texture</param>
     /// <param name="tileInfo">Tile configuration</param>
     /// <param name="padLeft">Left padding offset for coordinate clamping</param>
-    /// <param name="padTop">Top padding offset for coordinate clamping</param>
-    public void ExecuteWarp(VulkanImage altImage, VulkanImage output, VulkanImage alignment, TileInfo tileInfo, int padLeft = 0, int padTop = 0)
+    /// <param name="paddingTop">Top padding offset for coordinate clamping</param>
+    public void ExecuteWarp(VulkanImage sourceImage, VulkanImage outputImage, VulkanImage alignmentVectors, TileInfo tileInfo, int paddingLeft = 0, int paddingTop = 0)
     {
-        Console.WriteLine($"[WARP] ExecuteWarp: {altImage.Width}x{altImage.Height} -> {output.Width}x{output.Height}");
-        Console.WriteLine($"[WARP] TileInfo: TileSize={tileInfo.TileSize}, NTilesX={tileInfo.NTilesX}, NTilesY={tileInfo.NTilesY}");
-        Console.WriteLine($"[WARP] Padding: padLeft={padLeft}, padTop={padTop}");
+        Console.WriteLine($"[WARP] ExecuteWarp: {sourceImage.Width}x{sourceImage.Height} -> {outputImage.Width}x{outputImage.Height}");
+        Console.WriteLine($"[WARP] TileInfo: TileSize={tileInfo.TileSize}, TileCountX={tileInfo.TileCountX}, TileCountY={tileInfo.TileCountY}");
+        Console.WriteLine($"[WARP] Padding: paddingLeft={paddingLeft}, paddingTop={paddingTop}");
 
-        EnsureKernels();
+        EnsureKernelsInitialized();
 
-        // For Bayer images (mosaic_pattern_width=2), DownscaleFactor = 2
-        var downscaleFactor = 2;
-        var halfTileSizeForWarp = (downscaleFactor == 2 ? 1 : downscaleFactor) * tileInfo.TileSize;
+        // For Bayer images (mosaic_pattern_width=2), use downscale factor of 2
+        const int bayerDownscaleFactor = 2;
+        var halfTileSizeForWarp = (bayerDownscaleFactor == 2 ? 1 : bayerDownscaleFactor) * tileInfo.TileSize;
 
-        var alignParams = new AlignParams
+        var warpParams = new AlignParams
         {
             Scale = 1,
             BlackLevel = 0.0f,
             FactorRed = 1.0f, FactorGreen = 1.0f, FactorBlue = 1.0f,
-            DownscaleFactor = downscaleFactor,
+            DownscaleFactor = bayerDownscaleFactor,
             TileSize = tileInfo.TileSize,
             SearchDist = 0, WeightSSD = 0,
             HalfTileSize = halfTileSizeForWarp,
-            NumTilesX = tileInfo.NTilesX,
-            NumTilesY = tileInfo.NTilesY,
+            NumTilesX = tileInfo.TileCountX,
+            NumTilesY = tileInfo.TileCountY,
             UniformExposure = 0,
-            PadLeft = padLeft,
-            PadTop = padTop,
-            ImageWidth = (int)altImage.Width,
-            ImageHeight = (int)altImage.Height
+            PadLeft = paddingLeft,
+            PadTop = paddingTop,
+            ImageWidth = (int)sourceImage.Width,
+            ImageHeight = (int)sourceImage.Height
         };
 
-        using var paramBuffer = new VulkanBuffer(_ctx, (ulong)Marshal.SizeOf<AlignParams>(),
+        using var warpParamBuffer = new VulkanBuffer(_ctx, (ulong)Marshal.SizeOf<AlignParams>(),
             BufferUsageFlags.UniformBufferBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
-        paramBuffer.SetData([alignParams]);
+        warpParamBuffer.SetData([warpParams]);
 
-        var allocInfo = new CommandBufferAllocateInfo
+        var commandBufferAllocInfo = new CommandBufferAllocateInfo
         {
             SType = StructureType.CommandBufferAllocateInfo,
             Level = CommandBufferLevel.Primary,
             CommandPool = _ctx.CommandPool,
             CommandBufferCount = 1
         };
-        _ctx.Vk.AllocateCommandBuffers(_ctx.Device, in allocInfo, out var cmdBuffer);
+        _ctx.Vk.AllocateCommandBuffers(_ctx.Device, in commandBufferAllocInfo, out var cmdBuffer);
 
-        var beginInfo = new CommandBufferBeginInfo { SType = StructureType.CommandBufferBeginInfo, Flags = CommandBufferUsageFlags.OneTimeSubmitBit };
-        _ctx.Vk.BeginCommandBuffer(cmdBuffer, in beginInfo);
+        var commandBeginInfo = new CommandBufferBeginInfo { SType = StructureType.CommandBufferBeginInfo, Flags = CommandBufferUsageFlags.OneTimeSubmitBit };
+        _ctx.Vk.BeginCommandBuffer(cmdBuffer, in commandBeginInfo);
 
-        altImage.TransitionLayout(ImageLayout.General, cmdBuffer);
-        output.TransitionLayout(ImageLayout.General, cmdBuffer);
-        alignment.TransitionLayout(ImageLayout.General, cmdBuffer);
+        sourceImage.TransitionLayout(ImageLayout.General, cmdBuffer);
+        outputImage.TransitionLayout(ImageLayout.General, cmdBuffer);
+        alignmentVectors.TransitionLayout(ImageLayout.General, cmdBuffer);
 
-        var set = _descriptors.Allocate(_alignLayout);
-        _descriptors.UpdateBuffer(set, ShaderBindings.Alignment.Params, paramBuffer.Handle, (ulong)Marshal.SizeOf<AlignParams>(), DescriptorType.UniformBuffer);
-        _descriptors.UpdateImage(set, ShaderBindings.Alignment.InTexture, altImage.View, ImageLayout.General, DescriptorType.SampledImage);
+        var warpDescriptorSet = _descriptors.Allocate(_alignmentDescriptorLayout);
+        _descriptors.UpdateBuffer(warpDescriptorSet, ShaderBindings.Alignment.Params, warpParamBuffer.Handle, (ulong)Marshal.SizeOf<AlignParams>(), DescriptorType.UniformBuffer);
+        _descriptors.UpdateImage(warpDescriptorSet, ShaderBindings.Alignment.InTexture, sourceImage.View, ImageLayout.General, DescriptorType.SampledImage);
 
-        using var dummyComp = new VulkanImage(_ctx, 1, 1, Format.R32Sfloat, ImageUsageFlags.SampledBit);
-        dummyComp.TransitionLayout(ImageLayout.General, cmdBuffer);
-        _descriptors.UpdateImage(set, ShaderBindings.Alignment.CompTexture, dummyComp.View, ImageLayout.General, DescriptorType.SampledImage);
+        using var placeholderComparison = new VulkanImage(_ctx, 1, 1, Format.R32Sfloat, ImageUsageFlags.SampledBit);
+        placeholderComparison.TransitionLayout(ImageLayout.General, cmdBuffer);
+        _descriptors.UpdateImage(warpDescriptorSet, ShaderBindings.Alignment.CompTexture, placeholderComparison.View, ImageLayout.General, DescriptorType.SampledImage);
 
-        _descriptors.UpdateImage(set, ShaderBindings.Alignment.AlignmentVectors, alignment.View, ImageLayout.General, DescriptorType.SampledImage);
-        _descriptors.UpdateImage(set, ShaderBindings.Alignment.Output, output.View, ImageLayout.General, DescriptorType.StorageImage);
+        _descriptors.UpdateImage(warpDescriptorSet, ShaderBindings.Alignment.AlignmentVectors, alignmentVectors.View, ImageLayout.General, DescriptorType.SampledImage);
+        _descriptors.UpdateImage(warpDescriptorSet, ShaderBindings.Alignment.Output, outputImage.View, ImageLayout.General, DescriptorType.StorageImage);
 
-        _kernelWarp!.BindPipeline(cmdBuffer);
-        _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, _kernelWarp.PipelineLayout, 0, 1, &set, 0, null);
+        _kernelWarpImage!.BindPipeline(cmdBuffer);
+        _ctx.Vk.CmdBindDescriptorSets(cmdBuffer, PipelineBindPoint.Compute, _kernelWarpImage.PipelineLayout, 0, 1, &warpDescriptorSet, 0, null);
 
-        _kernelWarp.Dispatch(cmdBuffer, output.Width, output.Height, 1);
+        _kernelWarpImage.Dispatch(cmdBuffer, outputImage.Width, outputImage.Height, 1);
 
-        var barrier = new MemoryBarrier
+        var warpBarrier = new MemoryBarrier
         {
             SType = StructureType.MemoryBarrier,
             SrcAccessMask = AccessFlags.ShaderWriteBit,
@@ -443,19 +503,21 @@ public unsafe class AlignmentPipeline
         };
         _ctx.Vk.CmdPipelineBarrier(cmdBuffer, PipelineStageFlags.ComputeShaderBit,
             PipelineStageFlags.ComputeShaderBit | PipelineStageFlags.TransferBit | PipelineStageFlags.HostBit,
-            0, 1, &barrier, 0, null, 0, null);
+            0, 1, &warpBarrier, 0, null, 0, null);
 
         _ctx.Vk.EndCommandBuffer(cmdBuffer);
 
-        var submitInfo = new SubmitInfo
+        var queueSubmitInfo = new SubmitInfo
         {
             SType = StructureType.SubmitInfo,
             CommandBufferCount = 1,
             PCommandBuffers = &cmdBuffer
         };
-        _ctx.Vk.QueueSubmit(_ctx.ComputeQueue, 1, in submitInfo, default);
+        _ctx.Vk.QueueSubmit(_ctx.ComputeQueue, 1, in queueSubmitInfo, default);
         _ctx.Vk.QueueWaitIdle(_ctx.ComputeQueue);
 
         _ctx.Vk.FreeCommandBuffers(_ctx.Device, _ctx.CommandPool, 1, in cmdBuffer);
     }
+
+    #endregion
 }

@@ -43,8 +43,8 @@ public class LibRawLoaderTests(ITestOutputHelper output)
         Assert.Equal(result.Width * result.Height, result.Data.Length);
 
         Assert.True(result.WhiteLevel > 0);
-        Assert.NotNull(result.ColorFactors);
-        Assert.Equal(4, result.ColorFactors.Length);
+        Assert.NotNull(result.ColorChannelMultipliers);
+        Assert.Equal(4, result.ColorChannelMultipliers.Length);
         
         // Verify CFA pattern is valid
         Assert.NotNull(result.CfaPattern);

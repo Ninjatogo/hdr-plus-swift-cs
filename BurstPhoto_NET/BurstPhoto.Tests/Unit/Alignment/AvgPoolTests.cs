@@ -37,8 +37,8 @@ public class AvgPoolTests : IClassFixture<GpuCollectionFixture>
             IsBayerData = true,
             MosaicPatternWidth = 2,
             WhiteLevel = 65535,
-            BlackLevel = new[] { 0, 0, 0, 0 },
-            ColorFactors = new[] { 1.0f, 1.0f, 1.0f, 1.0f }
+            BlackLevels = new[] { 0, 0, 0, 0 },
+            ColorChannelMultipliers = new[] { 1.0f, 1.0f, 1.0f, 1.0f }
         };
     }
 

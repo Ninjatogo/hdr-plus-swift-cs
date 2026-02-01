@@ -17,10 +17,10 @@ public class LibTiffDngWriter : IRawImageWriter
     private const TiffTag CfaPlaneColor = (TiffTag)50710;
     private const TiffTag CfaLayout = (TiffTag)50711; 
     private const TiffTag LinearizationTable = (TiffTag)50712;
-    private const TiffTag BlackLevelRepeatDim = (TiffTag)50713;
-    private const TiffTag BlackLevel = (TiffTag)50714;
-    private const TiffTag BlackLevelDeltaH = (TiffTag)50715;
-    private const TiffTag BlackLevelDeltaV = (TiffTag)50716;
+    private const TiffTag BlackLevelsRepeatDim = (TiffTag)50713;
+    private const TiffTag BlackLevels = (TiffTag)50714;
+    private const TiffTag BlackLevelsDeltaH = (TiffTag)50715;
+    private const TiffTag BlackLevelsDeltaV = (TiffTag)50716;
     private const TiffTag WhiteLevel = (TiffTag)50717;
     private const TiffTag DefaultScale = (TiffTag)50718;
     private const TiffTag DefaultCropOrigin = (TiffTag)50719;
@@ -72,24 +72,25 @@ public class LibTiffDngWriter : IRawImageWriter
         }
     }
 
-    public Task WriteAsync(RawImage image, string path)
+    /// <inheritdoc />
+    public Task WriteAsync(RawImage image, string outputPath)
     {
-        return Task.Run(() => Write(path, image));
+        return Task.Run(() => Write(image, outputPath));
     }
 
-    public void Write(string path, RawImage image)
+    /// <inheritdoc />
+    public void Write(RawImage image, string outputPath)
     {
-        // Console.WriteLine($"LibTiffDngWriter.Write called for {path}");
-        using var output = Tiff.Open(path, "w");
-        if (output is null)
+        using var tiffFile = Tiff.Open(outputPath, "w");
+        if (tiffFile is null)
         {
-            throw new IOException($"Could not open file {path} for writing");
+            throw new IOException($"Could not open file {outputPath} for writing");
         }
-            
-        ConfigureTiffTags(output, image);
-        WriteImageData(output, image);
-            
-        output.WriteDirectory();
+
+        ConfigureTiffTags(tiffFile, image);
+        WriteImageData(tiffFile, image);
+
+        tiffFile.WriteDirectory();
     }
 
     private void ConfigureTiffTags(Tiff tif, RawImage image)
@@ -146,20 +147,20 @@ public class LibTiffDngWriter : IRawImageWriter
         tif.SetField(TiffTag.COMPRESSION, Compression.NONE); 
         tif.SetField(TiffTag.ROWSPERSTRIP, height);
 
-        // BlackLevel from source
-        if (image.BlackLevel is { Length: >= 4 })
+        // BlackLevels from source
+        if (image.BlackLevels is { Length: >= 4 })
         {
              // Must set RepeatDim if we have pattern black levels
-             tif.SetField(BlackLevelRepeatDim, 2, new short[] { 2, 2 });
+             tif.SetField(BlackLevelsRepeatDim, 2, new short[] { 2, 2 });
 
              // Convert int[] to double[] for RATIONAL tag
-             var bl = new double[image.BlackLevel.Length];
-             for(var i=0; i<bl.Length; i++) bl[i] = image.BlackLevel[i];
-             tif.SetField(BlackLevel, (short)bl.Length, bl);
+             var bl = new double[image.BlackLevels.Length];
+             for(var i=0; i<bl.Length; i++) bl[i] = image.BlackLevels[i];
+             tif.SetField(BlackLevels, (short)bl.Length, bl);
         }
         else
         {
-             tif.SetField(BlackLevel, 1, new[] { 0.0 });
+             tif.SetField(BlackLevels, 1, new[] { 0.0 });
         }
 
         // WhiteLevel from source
@@ -212,20 +213,20 @@ public class LibTiffDngWriter : IRawImageWriter
             tif.SetField(ColorMatrix2, image.ColorMatrix2.Length, image.ColorMatrix2);
         }
 
-        // AsShotNeutral - use source if available, otherwise compute from ColorFactors
+        // AsShotNeutral - use source if available, otherwise compute from ColorChannelMultipliers
         if (image.AsShotNeutral is { Length: >= 3 })
         {
             tif.SetField(AsShotNeutral, image.AsShotNeutral.Length, image.AsShotNeutral);
         }
-        else if (image.ColorFactors is { Length: >= 3 })
+        else if (image.ColorChannelMultipliers is { Length: >= 3 })
         {
-            // Compute from ColorFactors (camera multipliers) - these ARE the neutral values
+            // Compute from ColorChannelMultipliers (camera multipliers) - these ARE the neutral values
             var asShotNeutral = new double[3];
-            if (image.ColorFactors.Length >= 4)
+            if (image.ColorChannelMultipliers.Length >= 4)
             {
-                 double r = image.ColorFactors[0];
-                 var g = (image.ColorFactors[1] + image.ColorFactors[2]) / 2.0;
-                 double b = image.ColorFactors[3];
+                 double r = image.ColorChannelMultipliers[0];
+                 var g = (image.ColorChannelMultipliers[1] + image.ColorChannelMultipliers[2]) / 2.0;
+                 double b = image.ColorChannelMultipliers[3];
                  
                  // Normalize to make max = 1
                  var maxVal = Math.Max(r, Math.Max(g, b));
@@ -310,10 +311,10 @@ public class LibTiffDngWriter : IRawImageWriter
             new TiffFieldInfo(CfaLayout, 1, 1, TiffType.SHORT, FieldBit.Custom, false, false, "CFALayout"), // Fixed 1, no array
             
             new TiffFieldInfo(LinearizationTable, -1, -1, TiffType.SHORT, FieldBit.Custom, false, true, "LinearizationTable"),
-            new TiffFieldInfo(BlackLevelRepeatDim, 2, 2, TiffType.SHORT, FieldBit.Custom, false, true, "BlackLevelRepeatDim"),
-            new TiffFieldInfo(BlackLevel, -1, -1, TiffType.RATIONAL, FieldBit.Custom, true, false, "BlackLevel"),
-            new TiffFieldInfo(BlackLevelDeltaH, -1, -1, TiffType.SRATIONAL, FieldBit.Custom, false, true, "BlackLevelDeltaH"),
-            new TiffFieldInfo(BlackLevelDeltaV, -1, -1, TiffType.SRATIONAL, FieldBit.Custom, false, true, "BlackLevelDeltaV"),
+            new TiffFieldInfo(BlackLevelsRepeatDim, 2, 2, TiffType.SHORT, FieldBit.Custom, false, true, "BlackLevelsRepeatDim"),
+            new TiffFieldInfo(BlackLevels, -1, -1, TiffType.RATIONAL, FieldBit.Custom, true, false, "BlackLevels"),
+            new TiffFieldInfo(BlackLevelsDeltaH, -1, -1, TiffType.SRATIONAL, FieldBit.Custom, false, true, "BlackLevelsDeltaH"),
+            new TiffFieldInfo(BlackLevelsDeltaV, -1, -1, TiffType.SRATIONAL, FieldBit.Custom, false, true, "BlackLevelsDeltaV"),
 
             // WhiteLevel: NOT registered here - LibTiff.Net has internal definition
             // Will attempt to write using raw tag write method instead

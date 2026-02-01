@@ -5,7 +5,7 @@ namespace BurstPhoto.Core.Interfaces;
 /// <summary>
 /// Interface for the main denoising pipeline that orchestrates burst photo processing.
 /// </summary>
-public interface IDenoisePipeline
+public interface IDenoisePipeline : IDisposable
 {
     /// <summary>
     /// Processes a burst of images to produce a single denoised output.
@@ -22,4 +22,9 @@ public interface IDenoisePipeline
         ProcessingProgress progress,
         string outputDirectory,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Clears any cached results to free memory.
+    /// </summary>
+    void ClearCache();
 }
