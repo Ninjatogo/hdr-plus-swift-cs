@@ -9,6 +9,7 @@
 // Constant Buffers
 // -------------------------------------------------------------------------
 
+[[vk::binding(0, 0)]]
 cbuffer AlignParams : register(b0)
 {
     // avg_pool params
@@ -17,49 +18,64 @@ cbuffer AlignParams : register(b0)
     float FactorRed;
     float FactorGreen;
     float FactorBlue;
-    
+
     // compute_tile_differences params
     int DownscaleFactor;
     int TileSize;
     int SearchDist;
     int WeightSSD;
-    
+
     // warp params
     int HalfTileSize;
     int NumTilesX;
     int NumTilesY;
-    
+
     // correct_upsampling_error params
     int UniformExposure;
+
+    // Warp clamping params (to prevent reads into zero-padding region)
+    int PadLeft;
+    int PadTop;
+    int ImageWidth;   // Total image width (including padding)
+    int ImageHeight;  // Total image height (including padding)
 };
 
 // -------------------------------------------------------------------------
 // Resources
 // -------------------------------------------------------------------------
+// NOTE: Using explicit [[vk::binding]] attributes to match C# descriptor layout.
+// C# binds resources at: Binding 0 (b0), Binding 1 (t0), Binding 2 (t1), Binding 3 (t2), Binding 10 (u10).
 
-// t0
+// t0 -> Binding 1
+[[vk::binding(1, 0)]]
 Texture2D<float> InTexture : register(t0); // avg_pool, warp
+
+[[vk::binding(1, 0)]]
 Texture2D<float> RefTexture : register(t0); // compute_tile_diff, correct_upsample, find_best_tile (read tile_diff as t0?)
 
-// t1
+[[vk::binding(1, 0)]]
+Texture3D<float> InTileDiff : register(t0); // find_best_tile_alignment (TileDiff is 3D input)
+
+// t1 -> Binding 2
+[[vk::binding(2, 0)]]
 Texture2D<float> CompTexture : register(t1);
 
-// t2
-Texture2D<int4> PrevAlignment : register(t2); 
+// t2 -> Binding 3
+[[vk::binding(3, 0)]]
+Texture2D<int4> PrevAlignment : register(t2);
 
-// t0 for find_best_tile_alignment (TileDiff is 3D input)
-Texture3D<float> InTileDiff : register(t0);
-
-// u0
-// u0 -> u10 to avoid collision with t0
+// u10 -> Binding 10
+[[vk::binding(10, 0)]]
 RWTexture2D<float> OutTexture : register(u10); // avg_pool, warp
+
+[[vk::binding(10, 0)]]
 RWTexture3D<float> TileDiff : register(u10);   // compute_tile_differences
 
-// Output for find_best_tile_alignment
-RWTexture2D<int4> OutAlignment : register(u10); 
+[[vk::binding(10, 0)]]
+RWTexture2D<int4> OutAlignment : register(u10); // find_best_tile_alignment
 
-// Output for correct_upsampling_error
-RWTexture2D<int4> PrevAlignmentCorrected : register(u10);
+[[vk::binding(10, 0)]]
+RWTexture2D<int4> PrevAlignmentCorrected : register(u10); // correct_upsampling_error
 
 // -------------------------------------------------------------------------
 // Kernels
@@ -596,48 +612,105 @@ void correct_upsampling_error(uint3 DTid : SV_DispatchThreadID)
 }
 
 // -------------------------------------------------------------------------
+// upsample_alignment
+// -------------------------------------------------------------------------
+// Upsample scale factors (set by C# code based on input/output dimensions)
+// Added to AlignParams cbuffer: UpsampleScaleX, UpsampleScaleY
+
+[numthreads(16, 16, 1)]
+void upsample_alignment(uint3 DTid : SV_DispatchThreadID)
+{
+    // Upsample integer alignment vectors using nearest neighbor
+    // Input: PrevAlignment (smaller), Output: OutAlignment (larger)
+    // Coords in DTid are for the Output texture
+
+    // Get input dimensions to calculate proper scale
+    uint inWidth, inHeight;
+    PrevAlignment.GetDimensions(inWidth, inHeight);
+
+    uint outWidth, outHeight;
+    OutAlignment.GetDimensions(outWidth, outHeight);
+
+    // Compute scale factors (matches Swift: scale_x = output_width / input_width)
+    float scale_x = (float)outWidth / (float)inWidth;
+    float scale_y = (float)outHeight / (float)inHeight;
+
+    // Match Swift's upsample_nearest_int: x = round(gid.x / scale_x)
+    // This ensures proper nearest-neighbor centering
+    int srcX = (int)round((float)DTid.x / scale_x);
+    int srcY = (int)round((float)DTid.y / scale_y);
+
+    // Clamp to valid input range (Metal returns 0 for out-of-bounds, we clamp)
+    srcX = clamp(srcX, 0, (int)inWidth - 1);
+    srcY = clamp(srcY, 0, (int)inHeight - 1);
+
+    int4 val = PrevAlignment.Load(int3(srcX, srcY, 0));
+
+    // Write to output
+    OutAlignment[DTid.xy] = val;
+}
+
+// -------------------------------------------------------------------------
 // warp_texture_bayer
 // -------------------------------------------------------------------------
+// Matches Swift/Metal align.metal warp_texture_bayer (lines 587-638).
+// Metal's texture.read() on out-of-bounds returns 0 (border color).
+// HLSL/Vulkan Load() behavior is undefined for out-of-bounds, so we
+// explicitly check bounds and return 0 for invalid reads.
+// Zero values in misaligned regions cause the frequency domain merge to
+// fall back to the reference frame (high Wiener weight), preventing blur.
+
+// Helper function to safely read texture with bounds checking
+// Returns 0.0 for out-of-bounds coordinates (matching Metal behavior)
+float SafeTextureRead(Texture2D<float> tex, int readX, int readY)
+{
+    // Check bounds: coordinates must be within [0, ImageWidth) x [0, ImageHeight)
+    if (readX < 0 || readY < 0 || readX >= ImageWidth || readY >= ImageHeight)
+        return 0.0f;
+    return tex.Load(int3(readX, readY, 0)).r;
+}
+
 [numthreads(16, 16, 1)]
 void warp_texture_bayer(uint3 DTid : SV_DispatchThreadID)
 {
     uint2 gid = DTid.xy;
     int x = (int)gid.x;
     int y = (int)gid.y;
-    
+
     float half_tile_size_float = (float)HalfTileSize;
-    
+
     float x_grid = (x + 0.5f) / half_tile_size_float - 1.0f;
     float y_grid = (y + 0.5f) / half_tile_size_float - 1.0f;
-    
+
     int x_grid_floor = (int)(max(0.0f, floor(x_grid)) + 0.1f);
     int y_grid_floor = (int)(max(0.0f, floor(y_grid)) + 0.1f);
     int x_grid_ceil  = (int)(min(ceil(x_grid), (float)NumTilesX - 1.0f) + 0.1f);
     int y_grid_ceil  = (int)(min(ceil(y_grid), (float)NumTilesY - 1.0f) + 0.1f);
-    
+
     float weight_x = ((x % HalfTileSize) + 0.5f) / (2.0f * half_tile_size_float);
     float weight_y = ((y % HalfTileSize) + 0.5f) / (2.0f * half_tile_size_float);
-    
+
     int4 prev_align0 = DownscaleFactor * PrevAlignment.Load(int3(x_grid_floor, y_grid_floor, 0));
     int4 prev_align1 = DownscaleFactor * PrevAlignment.Load(int3(x_grid_ceil,  y_grid_floor, 0));
     int4 prev_align2 = DownscaleFactor * PrevAlignment.Load(int3(x_grid_floor, y_grid_ceil, 0));
     int4 prev_align3 = DownscaleFactor * PrevAlignment.Load(int3(x_grid_ceil,  y_grid_ceil, 0));
-    
-    float val0 = InTexture.Load(int3(x + prev_align0.x, y + prev_align0.y, 0)).r;
+
+    // Safe reads with explicit bounds checking (returns 0 for out-of-bounds, matching Metal)
+    float val0 = SafeTextureRead(InTexture, x + prev_align0.x, y + prev_align0.y);
     float w0 = (1.0f - weight_x) * (1.0f - weight_y);
-    
-    float val1 = InTexture.Load(int3(x + prev_align1.x, y + prev_align1.y, 0)).r;
+
+    float val1 = SafeTextureRead(InTexture, x + prev_align1.x, y + prev_align1.y);
     float w1 = weight_x * (1.0f - weight_y);
-    
-    float val2 = InTexture.Load(int3(x + prev_align2.x, y + prev_align2.y, 0)).r;
+
+    float val2 = SafeTextureRead(InTexture, x + prev_align2.x, y + prev_align2.y);
     float w2 = (1.0f - weight_x) * weight_y;
-    
-    float val3 = InTexture.Load(int3(x + prev_align3.x, y + prev_align3.y, 0)).r;
+
+    float val3 = SafeTextureRead(InTexture, x + prev_align3.x, y + prev_align3.y);
     float w3 = weight_x * weight_y;
-    
+
     float pixel_value = val0 * w0 + val1 * w1 + val2 * w2 + val3 * w3;
     float total_weight = w0 + w1 + w2 + w3;
-    
+
     OutTexture[gid] = pixel_value / total_weight;
 }
 
@@ -701,7 +774,8 @@ void warp_texture_xtrans(uint3 DTid : SV_DispatchThreadID)
             float curr_weight = weight_x * weight_y; // Metal: weight_x * weight_y
             
             total_weight += curr_weight;
-            total_intensity += curr_weight * InTexture.Load(int3(x2_pix, y2_pix, 0)).r;
+            // Safe read with bounds check (returns 0 for out-of-bounds, matching Metal)
+            total_intensity += curr_weight * SafeTextureRead(InTexture, x2_pix, y2_pix);
         }
     }
     

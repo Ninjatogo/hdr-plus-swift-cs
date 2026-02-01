@@ -12,9 +12,8 @@
   <ItemGroup>
     <PackageReference Include="BitMiracle.LibTiff.NET" Version="2.4.660" />
     <PackageReference Include="MetadataExtractor" Version="2.9.0" />
-    <PackageReference Include="HurlbertVisionLab.LibRawWrapper" Version="1.0.1.1" />
+    <PackageReference Include="HurlbertVisionLab.LibRawWrapper" Version="1.0.2.3" />
     <!-- Keep Sdcb.LibRaw for potential fallback/metadata if needed -->
-    <PackageReference Include="Sdcb.LibRaw" Version="0.21.1.7" />
   </ItemGroup>
 
   <!-- Copy native DNG SDK wrapper DLL to output -->

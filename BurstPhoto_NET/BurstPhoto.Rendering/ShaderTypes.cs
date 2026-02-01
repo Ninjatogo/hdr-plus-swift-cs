@@ -14,30 +14,26 @@ public struct AlignParams
     public float FactorRed;
     public float FactorGreen;
     public float FactorBlue;
-    
+
     // compute_tile_differences
     public int DownscaleFactor;
     public int TileSize;
     public int SearchDist;
     public int WeightSSD;
-    
+
     // warp
     public int HalfTileSize;
     public int NumTilesX;
     public int NumTilesY;
-    
+
     // correct_upsampling_error
     public int UniformExposure;
-    
-    // Padding to ensure 16-byte alignment if needed, but HLSL CB padding rules apply.
-    // Ints and floats are 4 bytes. 
-    // Metal/HLSL CBuffers often align to 16 bytes.
-    // Let's assume tight packing unless we see issues, or add explicit padding.
-    // Current total: 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 = 52 bytes.
-    // 52 is not 16-aligned (48, 64). Padding might be needed at end.
-    public int Padding0;
-    public int Padding1;
-    public int Padding2;
+
+    // Warp clamping params (to prevent reads into zero-padding region)
+    public int PadLeft;
+    public int PadTop;
+    public int ImageWidth;   // Total image width (including padding)
+    public int ImageHeight;  // Total image height (including padding)
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -113,14 +109,17 @@ public struct FrequencyParams
     public float MaxMotionNorm;
     public int TileSize;
     public int UniformExposure;
-    
+
     // Additional params
-    public int NumTextures; 
+    public int NumTextures;
     public float ExposureFactor;
     public float WhiteLevel;
-    public float BlackLevelMean; 
+    public float BlackLevelMean;
     public float MeanMismatch;
-    
-    public int Padding0;
-    public int Padding1;
+
+    // Per-channel black levels for reduce_artifacts_tile_border
+    public int BlackLevel0;
+    public int BlackLevel1;
+    public int BlackLevel2;
+    public int BlackLevel3;
 }

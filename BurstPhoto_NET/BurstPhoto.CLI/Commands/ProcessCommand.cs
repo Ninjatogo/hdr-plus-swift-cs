@@ -3,27 +3,17 @@ using Spectre.Console;
 using BurstPhoto.Core.Interfaces;
 using BurstPhoto.Core.Models;
 using System.ComponentModel;
-using System.IO;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace BurstPhoto.CLI.Commands;
 
-public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
+public class ProcessCommand(IDenoisePipeline pipeline) : AsyncCommand<ProcessCommand.Settings>
 {
-    private readonly IDenoisePipeline _pipeline;
-
-    public ProcessCommand(IDenoisePipeline pipeline)
-    {
-        _pipeline = pipeline;
-    }
-
     public class Settings : CommandSettings
     {
         [CommandArgument(0, "<INPUT...>")]
         [Description("Input raw file paths (minimum 2 required)")]
-        public string[] InputPaths { get; set; } = Array.Empty<string>();
+        public string[] InputPaths { get; set; } = [];
 
         [CommandOption("-o|--output")]
         [Description("Output directory (default: current directory)")]
@@ -57,6 +47,10 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
         [Description("Enable debug output: saves intermediate DNGs to DebugOutput folder")]
         public bool DebugDump { get; set; } = false;
         
+        [CommandOption("-v|--validate-fft")]
+        [Description("Run FFT validation tests (Parseval's theorem, round-trip, DC component). Stops early if validation fails.")]
+        public bool ValidateFft { get; set; } = false;
+        
         [CommandOption("--log")]
         [Description("Save console output to a log file (default: logs/process_YYYYMMDD_HHMMSS.log)")]
         public bool Log { get; set; } = false;
@@ -64,30 +58,62 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
         [CommandOption("--log-file")]
         [Description("Custom log file path (implies --log)")]
         public string? LogFile { get; set; } = null;
+
+        [CommandOption("--gpu")]
+        [Description("GPU device index to use (0, 1, etc.). Use --list-gpus to see available devices. Can also be set via BURSTPHOTO_GPU environment variable.")]
+        public int? GpuIndex { get; set; } = null;
+
+        [CommandOption("--list-gpus")]
+        [Description("List available GPU devices and exit")]
+        public bool ListGpus { get; set; } = false;
+
+        [CommandOption("--skip-reduce-artifacts")]
+        [Description("Debug: Skip the reduce_artifacts_tile_border pass to test if it causes the 8x8 grid pattern")]
+        public bool SkipReduceArtifacts { get; set; } = false;
+
+        [CommandOption("--profile")]
+        [Description("Enable performance profiling: outputs detailed timing for each pipeline stage")]
+        public bool Profile { get; set; } = false;
     }
 
     public override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
+        // Handle --list-gpus command
+        if (settings.ListGpus)
+        {
+            ListAvailableGpus();
+            return 0;
+        }
+
+        // Handle --gpu option by setting environment variable for this process
+        if (settings.GpuIndex.HasValue)
+        {
+            Environment.SetEnvironmentVariable("BURSTPHOTO_GPU", settings.GpuIndex.Value.ToString());
+            Console.WriteLine($"[INFO] GPU device index set to {settings.GpuIndex.Value} for this session");
+        }
+
         TextWriter? logWriter = null;
-        TextWriter originalOut = Console.Out;
-        
+        var originalOut = Console.Out;
+
         try
         {
             // Setup logging if requested
             if (settings.Log || !string.IsNullOrEmpty(settings.LogFile))
             {
-                string logPath = settings.LogFile ?? GenerateLogPath();
-                string? logDir = Path.GetDirectoryName(logPath);
+                var logPath = settings.LogFile ?? GenerateLogPath();
+                var logDir = Path.GetDirectoryName(logPath);
                 if (!string.IsNullOrEmpty(logDir) && !Directory.Exists(logDir))
                 {
                     Directory.CreateDirectory(logDir);
                 }
-                
+
                 logWriter = new StreamWriter(logPath, append: false) { AutoFlush = true };
                 Console.SetOut(new TeeTextWriter(originalOut, logWriter));
                 Console.WriteLine($"[LOG] Output being saved to: {logPath}");
             }
             // Parse options
+            Console.WriteLine($"[CLI DEBUG] settings.ValidateFft = {settings.ValidateFft}");
+            Console.WriteLine($"[CLI DEBUG] settings.DebugDump = {settings.DebugDump}");
             var options = new ProcessingOptions
             {
                 Merging = ParseEnum<MergingAlgorithm>(settings.Algorithm, "algorithm"),
@@ -98,7 +124,10 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
                 OutputBitDepth = settings.BitDepth.Equals("16Bit", StringComparison.OrdinalIgnoreCase) 
                     ? OutputBitDepthOption.Bit16 
                     : OutputBitDepthOption.Native,
-                EnableDebugDump = settings.DebugDump
+                EnableDebugDump = settings.DebugDump,
+                EnableFftValidation = settings.ValidateFft,
+                SkipReduceArtifacts = settings.SkipReduceArtifacts,
+                EnableProfiling = settings.Profile
             };
 
             var progress = new ProcessingProgress();
@@ -108,7 +137,7 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
 
             AnsiConsole.MarkupLine($"[blue]Processing {settings.InputPaths.Length} images...[/]");
 
-            string outputPath = await _pipeline.ProcessAsync(
+            var outputPath = await pipeline.ProcessAsync(
                 settings.InputPaths,
                 options,
                 progress,
@@ -129,14 +158,14 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
             if (logWriter != null)
             {
                 Console.SetOut(originalOut);
-                logWriter.Dispose();
+                await logWriter.DisposeAsync();
             }
         }
     }
     
     private static string GenerateLogPath()
     {
-        string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
         return Path.Combine("logs", $"process_{timestamp}.log");
     }
 
@@ -155,51 +184,61 @@ public class ProcessCommand : AsyncCommand<ProcessCommand.Settings>
         {
             "off" => ExposureControlOption.Off,
             "linearfullrange" => ExposureControlOption.LinearFullRange,
-            "linear1ev" => ExposureControlOption.Linear1EV,
-            "curve0ev" => ExposureControlOption.Curve0EV,
-            "curve1ev" => ExposureControlOption.Curve1EV,
+            "linear1ev" => ExposureControlOption.Linear1Ev,
+            "curve0ev" => ExposureControlOption.Curve0Ev,
+            "curve1ev" => ExposureControlOption.Curve1Ev,
             _ => throw new ArgumentException($"Invalid exposure control: {value}")
         };
+    }
+
+    private static void ListAvailableGpus()
+    {
+        try
+        {
+            // Temporarily create a VulkanContext just to enumerate devices
+            // The constructor will print all available GPUs
+            Console.WriteLine("Enumerating available Vulkan devices...\n");
+            using var ctx = new Rendering.VulkanContext();
+            Console.WriteLine("\nTo use a specific GPU, use one of these methods:");
+            Console.WriteLine("  1. Command-line: --gpu <index>");
+            Console.WriteLine("  2. Environment variable: set BURSTPHOTO_GPU=<index>");
+            Console.WriteLine("\nExample: burstphoto process --gpu 0 input1.dng input2.dng");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error enumerating GPUs: {ex.Message}");
+        }
     }
 }
 
 /// <summary>
 /// TextWriter that writes to two outputs simultaneously (console and file).
 /// </summary>
-internal class TeeTextWriter : TextWriter
+internal class TeeTextWriter(TextWriter primary, TextWriter secondary) : TextWriter
 {
-    private readonly TextWriter _primary;
-    private readonly TextWriter _secondary;
-
-    public TeeTextWriter(TextWriter primary, TextWriter secondary)
-    {
-        _primary = primary;
-        _secondary = secondary;
-    }
-
-    public override Encoding Encoding => _primary.Encoding;
+    public override Encoding Encoding => primary.Encoding;
 
     public override void Write(char value)
     {
-        _primary.Write(value);
-        _secondary.Write(value);
+        primary.Write(value);
+        secondary.Write(value);
     }
 
     public override void Write(string? value)
     {
-        _primary.Write(value);
-        _secondary.Write(value);
+        primary.Write(value);
+        secondary.Write(value);
     }
 
     public override void WriteLine(string? value)
     {
-        _primary.WriteLine(value);
-        _secondary.WriteLine(value);
+        primary.WriteLine(value);
+        secondary.WriteLine(value);
     }
 
     public override void Flush()
     {
-        _primary.Flush();
-        _secondary.Flush();
+        primary.Flush();
+        secondary.Flush();
     }
 }

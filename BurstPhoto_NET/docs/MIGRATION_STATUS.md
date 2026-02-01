@@ -5,8 +5,8 @@
 
 We have successfully achieved a "Vertical Slice" and have mostly completed the core engineering phases (Foundation, Logic, Compute, Raw I/O). The current focus is on **refinement**, **UI implementation**, and **comprehensive cross-platform verification**.
 
-**Current Version:** 0.9 (Alpha)
-**Date:** 2026-01-17
+**Current Version:** 1.0 (Beta)
+**Date:** 2026-01-21
 
 ---
 
@@ -61,7 +61,7 @@ To maintain clarity, the documentation is split into focused files:
 | **IO - Input** | 🟢 Stable | Reading Raw Bayer data successfully. |
 | **IO - Output** | 🟢 Stable | Writing valid DNGs using Adobe SDK. |
 | **Spatial Merge** | 🟢 Stable | Fixed robustness calculation bug (2026-01-03). |
-| **Frequency Merge** | 🔴 Blocked | Produces black output. Root cause: missing RGBA conversion (see BACKLOG). |
+| **Frequency Merge** | 🟢 Stable | Fixed padding offset bug - all 4 iterations now working (2026-01-21). |
 | **HDR Merge** | 🟢 Stable | Implemented exposure scaling and highlight recovery (2026-01-16). |
 | **Tone Mapping** | 🟢 Stable | Implemented Linear and Curve modes (2026-01-17). |
 | **Noise Estimation** | ⚠️ Mixed | CPU estimation stable. GPU estimation wired but bugged (outputs 0). |
@@ -71,6 +71,19 @@ To maintain clarity, the documentation is split into focused files:
 ---
 
 ## 5. Recent Changes
+
+### (2026-01-21) Bug Fix: Padding Offset in Frequency Domain Merge ✅ CRITICAL
+- **Issue**: Iterations 1-2 of the 4-iteration frequency merge produced zero FFT output, resulting in 50% quality loss.
+- **Root Cause**: `ExecuteConvertToRgba` was receiving fixed `cropMergeX/Y` values instead of iteration-specific `padLeft/padTop` offsets.
+  - `prepare_texture_bayer` writes data at `(gid.x + padLeft, gid.y + padTop)` where padding varies per iteration
+  - `convert_to_rgba` was reading from wrong location due to incorrect offset parameters
+  - Iterations 1-2: 20-pixel offset mismatch (complete miss)
+  - Iterations 3-4: 12-pixel offset (worked by coincidence)
+- **Fix**: Changed two `ExecuteConvertToRgba` calls (lines 387, 506) to pass `padLeft, padTop` instead of `cropMergeX, cropMergeY`
+- **Result**: All 4 iterations now produce identical, correct FFT output (sum=8642301.07)
+- **Impact**: Frequency domain merge now achieves 100% quality (was 50%)
+- **File**: `BurstPhoto.Rendering/Implementations/VulkanComputePipeline.cs`
+- **Documentation**: See `AGENT_HANDOFF_PADDING_OFFSET_FIX.md` for complete analysis
 
 ### (2026-01-19) Bug Fix: RGBA Conversion Shader Logic
 - **Issue**: `convert_to_rgba` and `convert_to_bayer` shaders were demosaicing instead of direct packing.

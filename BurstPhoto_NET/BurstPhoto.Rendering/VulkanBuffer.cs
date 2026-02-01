@@ -1,7 +1,4 @@
-using System;
-using System.Runtime.CompilerServices;
 using Silk.NET.Vulkan;
-using Silk.NET.Core.Native;
 using Buffer = Silk.NET.Vulkan.Buffer;
 
 namespace BurstPhoto.Rendering;
@@ -67,7 +64,7 @@ public unsafe class VulkanBuffer : IDisposable
     {
         _ctx.Vk.GetPhysicalDeviceMemoryProperties(_ctx.PhysicalDevice, out var memProperties);
 
-        for (int i = 0; i < memProperties.MemoryTypeCount; i++)
+        for (var i = 0; i < memProperties.MemoryTypeCount; i++)
         {
             if ((typeFilter & (1 << i)) != 0 && (memProperties.MemoryTypes[i].PropertyFlags & properties) == properties)
             {
@@ -80,7 +77,7 @@ public unsafe class VulkanBuffer : IDisposable
 
     public void UploadData<T>(T[] data) where T : unmanaged
     {
-        ulong dataSize = (ulong)(data.Length * sizeof(T));
+        var dataSize = (ulong)(data.Length * sizeof(T));
 
         // Use staging buffer for better performance on discrete GPUs
         using var stagingBuffer = new VulkanBuffer(_ctx, dataSize, BufferUsageFlags.TransferSrcBit, MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
@@ -104,7 +101,7 @@ public unsafe class VulkanBuffer : IDisposable
              throw new InvalidOperationException("Cannot map non-host-visible memory directly. Use UploadData instead.");
          }
          
-         ulong dataSize = (ulong)(data.Length * sizeof(T));
+         var dataSize = (ulong)(data.Length * sizeof(T));
          void* mappedData;
          _ctx.Vk.MapMemory(_ctx.Device, Memory, 0, dataSize, 0, &mappedData);
          fixed (T* pData = data)
@@ -120,7 +117,7 @@ public unsafe class VulkanBuffer : IDisposable
 
     public T[] DownloadData<T>(ulong count) where T : unmanaged
     {
-        ulong dataSize = count * (ulong)sizeof(T);
+        var dataSize = count * (ulong)sizeof(T);
         var result = new T[count];
 
         // If host visible, map directly

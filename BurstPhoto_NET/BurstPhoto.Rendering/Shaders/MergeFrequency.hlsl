@@ -9,6 +9,7 @@
 // Constant Buffers
 // -------------------------------------------------------------------------
 
+[[vk::binding(0, 0)]]
 cbuffer FrequencyParams : register(b0)
 {
     float RobustnessNorm;
@@ -16,30 +17,43 @@ cbuffer FrequencyParams : register(b0)
     float MaxMotionNorm;
     int TileSize;
     int UniformExposure;
-    
+
     // Additional params
-    int NumTextures; 
+    int NumTextures;
     float ExposureFactor;
     float WhiteLevel;
-    float BlackLevelMean; 
+    float BlackLevelMean;
     float MeanMismatch;
 };
 
 // -------------------------------------------------------------------------
 // Resources
 // -------------------------------------------------------------------------
+// NOTE: Using explicit [[vk::binding]] attributes to match C# descriptor layout.
+// C# binds: Binding 0 = UBO, Binding 1 (t0), Binding 2 (t1), Binding 3 (t2), Binding 4 (t3), Binding 5 (t4), Binding 10 (u10)
 
-// CRITICAL FIX: Register assignments must match C# Vulkan descriptor bindings
-// C# binds: Binding 0 = UBO, Binding 1-5 = Textures, Binding 10 = Output
 // Primary Inputs
-Texture2D<float4> RefTexture     : register(t1); // Binding 1
-Texture2D<float4> AlignedTexture : register(t2); // Binding 2
-Texture2D<float4> AuxTexture0    : register(t3); // Binding 3 (RMS)
-Texture2D<float4> AuxTexture1    : register(t4); // Binding 4 (Mismatch)
-Texture2D<float4> AuxTexture2    : register(t5); // Binding 5 (Highlights)
+// IMPORTANT: These use register(t1-t5) but must map to Bindings 1-5 (not 2-6!)
+[[vk::binding(1, 0)]]
+Texture2D<float4> RefTexture     : register(t1);
+
+[[vk::binding(2, 0)]]
+Texture2D<float4> AlignedTexture : register(t2);
+
+[[vk::binding(3, 0)]]
+Texture2D<float4> AuxTexture0    : register(t3); // RMS
+
+[[vk::binding(4, 0)]]
+Texture2D<float4> AuxTexture1    : register(t4); // Mismatch
+
+[[vk::binding(5, 0)]]
+Texture2D<float4> AuxTexture2    : register(t5); // Highlights
 
 // Outputs
-RWTexture2D<float4> OutputTexture : register(u10); // Binding 10
+[[vk::binding(10, 0)]]
+// NOTE: image_format attribute removed - requires ShaderStorageImageWriteWithoutFormat feature instead
+// [[vk::image_format("rgba32f")]]  // This causes DXC compilation errors on some systems
+RWTexture2D<float4> OutputTexture : register(u10);
 
 // -------------------------------------------------------------------------
 // Helpers
@@ -56,8 +70,10 @@ void forward_fft_impl(int ts, uint3 gid, RWTexture2D<float4> outFT, Texture2D<fl
     int sz34 = (ts / 4) * 3;
     float angle = -2.0f * PI / (float)ts;
     float4 zeros = (float4)0.0f;
-    float4 tmp_data[64]; 
-    float4 tmp_tile[512]; 
+    // Array sizes match Metal: tmp_data[2*ts], tmp_tile[(ts/2+1)*2*ts]
+    // For ts=8: tmp_data[16], tmp_tile[80]
+    float4 tmp_data[16];
+    float4 tmp_tile[80]; 
     float coefRe, coefIm, norm_cosine0, norm_cosine1;
     float4 Re0, Re1, Re2, Re3, Im0, Im1, Im2, Im3;
     float4 Re00, Re11, Re22, Re33, Im00, Im11, Im22, Im33, dataRe, dataIm;
@@ -139,8 +155,29 @@ void forward_fft_impl(int ts, uint3 gid, RWTexture2D<float4> outFT, Texture2D<fl
 [numthreads(16, 16, 1)]
 void forward_fft(uint3 DTid : SV_DispatchThreadID)
 {
-    // t0=Input, u0=Output
-    forward_fft_impl(TileSize, DTid, OutputTexture, RefTexture); 
+    // Bounds check: Ensure thread ID corresponds to a valid tile
+    // RefTexture is the input RGBA texture (width × height)
+    // OutputTexture is 2x width for complex number storage (2*width × height)
+    uint inputWidth, inputHeight;
+    RefTexture.GetDimensions(inputWidth, inputHeight);
+
+    uint outputWidth, outputHeight;
+    OutputTexture.GetDimensions(outputWidth, outputHeight);
+
+    // Calculate tile grid based on INPUT dimensions (RGBA texture)
+    int nTilesX = inputWidth / TileSize;
+    int nTilesY = inputHeight / TileSize;
+
+    // Bounds check: verify thread is within tile grid
+    if (DTid.x >= (uint)nTilesX || DTid.y >= (uint)nTilesY)
+        return;
+
+    // Additional safety check: verify output texture is correctly sized (2x input width)
+    // This catches configuration errors early
+    if (outputWidth != inputWidth * 2 || outputHeight != inputHeight)
+        return;
+
+    forward_fft_impl(TileSize, DTid, OutputTexture, RefTexture);
 }
 
 // -------------------------------------------------------------------------
@@ -149,6 +186,26 @@ void forward_fft(uint3 DTid : SV_DispatchThreadID)
 [numthreads(16, 16, 1)]
 void backward_fft(uint3 DTid : SV_DispatchThreadID)
 {
+    // Bounds check: Ensure thread ID corresponds to a valid tile
+    // For backward FFT: RefTexture has DOUBLE width (complex storage), OutputTexture is single width
+    uint inputWidth, inputHeight;
+    RefTexture.GetDimensions(inputWidth, inputHeight);
+
+    uint outputWidth, outputHeight;
+    OutputTexture.GetDimensions(outputWidth, outputHeight);
+
+    // Calculate tile grid based on OUTPUT dimensions (single-width RGBA)
+    int nTilesX = outputWidth / TileSize;
+    int nTilesY = outputHeight / TileSize;
+
+    // Bounds check: verify thread is within tile grid
+    if (DTid.x >= (uint)nTilesX || DTid.y >= (uint)nTilesY)
+        return;
+
+    // Additional safety check: verify input texture is correctly sized (2x output width)
+    if (inputWidth != outputWidth * 2 || inputHeight != outputHeight)
+        return;
+
     uint2 gid = DTid.xy;
     int ts = TileSize;
     int m0 = gid.x * ts;
@@ -317,6 +374,15 @@ void reduce_artifacts_tile_border(uint3 DTid : SV_DispatchThreadID)
 [numthreads(16, 16, 1)]
 void deconvolute_frequency_domain(uint3 DTid : SV_DispatchThreadID)
 {
+    // Bounds check: Ensure thread ID corresponds to a valid tile
+    uint width, height;
+    RefTexture.GetDimensions(width, height);
+    int nTilesX = width;  // RefTexture is tile grid (nTilesX × nTilesY)
+    int nTilesY = height;
+
+    if (DTid.x >= nTilesX || DTid.y >= nTilesY)
+        return; // Skip out-of-bounds threads
+
     uint2 gid = DTid.xy;
     int ts = TileSize;
     int m0 = gid.x * ts;
@@ -359,6 +425,15 @@ void deconvolute_frequency_domain(uint3 DTid : SV_DispatchThreadID)
 [numthreads(16, 16, 1)]
 void merge_frequency_domain(uint3 DTid : SV_DispatchThreadID)
 {
+    // Bounds check: Ensure thread ID corresponds to a valid tile
+    uint width, height;
+    AuxTexture0.GetDimensions(width, height);
+    int nTilesX = width;  // AuxTexture0 is tile grid (nTilesX × nTilesY)
+    int nTilesY = height;
+
+    if (DTid.x >= nTilesX || DTid.y >= nTilesY)
+        return; // Skip out-of-bounds threads
+
     // Mapping:
     // u0 = RefFT (RW) = OutputTexture
     // t0 = RefFT (Read) (If reading logic needed, can read u0)
@@ -366,7 +441,7 @@ void merge_frequency_domain(uint3 DTid : SV_DispatchThreadID)
     // t2 = RMS = AuxTexture0
     // t3 = Mismatch = AuxTexture1
     // t4 = Highlights = AuxTexture2
-    
+
     uint2 gid = DTid.xy;
     int ts = TileSize;
     int m0 = gid.x * ts;

@@ -1,22 +1,10 @@
 using BurstPhoto.Core.Implementations;
-using BurstPhoto.Core.Models;
-using Xunit;
-using Xunit.Abstractions;
-using System;
-using System.IO;
 
 namespace BurstPhoto.Tests;
 
-public class LibRawLoaderTests
+public class LibRawLoaderTests(ITestOutputHelper output)
 {
-    private readonly ITestOutputHelper _output;
-
-    public LibRawLoaderTests(ITestOutputHelper output)
-    {
-        _output = output;
-    }
-
-    [SkippableFact]
+    [Fact]
     public void Load_Dji0011_ReturnsValidRawImage()
     {
         // Arrange
@@ -29,13 +17,13 @@ public class LibRawLoaderTests
             dngPath = Path.Combine(repoRoot, "DJI_0011.dng");
         }
 
-        // Skip test if file doesn't exist
-        Skip.If(!File.Exists(dngPath), $"Test file not found at {dngPath}");
+        // Skip test if file doesn't exist (xUnit v3 built-in skip)
+        Assert.SkipWhen(!File.Exists(dngPath), $"Test file not found at {dngPath}");
 
         var loader = new LibRawLoader();
 
         // Act
-        RawImage result = loader.Load(dngPath);
+        var result = loader.Load(dngPath);
 
         // Assert
         Assert.NotNull(result);
@@ -45,18 +33,18 @@ public class LibRawLoaderTests
         Assert.NotEmpty(result.Data);
 
         // Current implementation returns single-channel Bayer data (not RGB)
-        _output.WriteLine($"Dimensions: {result.Width}x{result.Height}");
-        _output.WriteLine($"Data length: {result.Data.Length}");
-        _output.WriteLine($"Expected: {result.Width * result.Height}");
-        _output.WriteLine($"IsBayerData: {result.IsBayerData}");
-        _output.WriteLine($"CfaPattern: [{string.Join(", ", result.CfaPattern)}]");
+        output.WriteLine($"Dimensions: {result.Width}x{result.Height}");
+        output.WriteLine($"Data length: {result.Data.Length}");
+        output.WriteLine($"Expected: {result.Width * result.Height}");
+        output.WriteLine($"IsBayerData: {result.IsBayerData}");
+        output.WriteLine($"CfaPattern: [{string.Join(", ", result.CfaPattern)}]");
         
         Assert.True(result.IsBayerData, "Expected Bayer data flag to be true");
         Assert.Equal(result.Width * result.Height, result.Data.Length);
 
         Assert.True(result.WhiteLevel > 0);
-        Assert.NotNull(result.ColorFactors);
-        Assert.Equal(4, result.ColorFactors.Length);
+        Assert.NotNull(result.ColorChannelMultipliers);
+        Assert.Equal(4, result.ColorChannelMultipliers.Length);
         
         // Verify CFA pattern is valid
         Assert.NotNull(result.CfaPattern);

@@ -3,10 +3,6 @@ using BurstPhoto.Core.Models;
 using HurlbertVisionLab.LibRawWrapper.Native;
 using MetadataExtractor;
 using MetadataExtractor.Formats.Exif;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Runtime.InteropServices;
 
 namespace BurstPhoto.Core.Implementations;
 
@@ -26,23 +22,23 @@ public class LibRawLoader : IRawImageLoader
             
             // Get raw image dimensions
             var sizes = iProcessor.Sizes;
-            int rawWidth = sizes.RawWidth;
-            int rawHeight = sizes.RawHeight;
+            var rawWidth = sizes.RawWidth;
+            var rawHeight = sizes.RawHeight;
             
             // Get image parameters (includes CFA pattern and camera info)
             var imageParams = iProcessor.ImageParameters;
-            string cameraMake = imageParams.Make ?? "";
-            string cameraModel = imageParams.Model ?? "";
+            var cameraMake = imageParams.Make ?? "";
+            var cameraModel = imageParams.Model ?? "";
             
             // Decode CFA pattern from LibRaw's Filters bitmask
-            int[] cfaPattern = DecodeCfaPattern(imageParams.Filters);
+            var cfaPattern = DecodeCfaPattern(imageParams.Filters);
             
             // Detect X-Trans sensors using the camera info we already have
-            bool isXTrans = IsXTransSensor(cameraMake, cameraModel);
+            var isXTrans = IsXTransSensor(cameraMake, cameraModel);
             
             // Get color info from LibRaw
             var color = iProcessor.Color;
-            int whiteLevel = color.Maximum;
+            var whiteLevel = color.Maximum;
             
             // Get per-channel black level from LibRaw
             // The cblack array in LibRaw contains per-channel black corrections: cblack[0..3] = R, G1, B, G2
@@ -52,14 +48,15 @@ public class LibRawLoader : IRawImageLoader
                 var perChannelBlack = color.GetPerChannelBlackCorrection();
                 // PerChannelBlackCorrection provides array-style access to cblack[0..3]
                 // Try to access as indexable (int this[int index] or similar)
-                if (perChannelBlack is System.Collections.IList list && list.Count >= 4)
+                if (perChannelBlack is System.Collections.IList { Count: >= 4 } list)
                 {
-                    blackLevel = new int[] { 
+                    blackLevel =
+                    [
                         Convert.ToInt32(list[0]), 
                         Convert.ToInt32(list[1]), 
                         Convert.ToInt32(list[2]), 
-                        Convert.ToInt32(list[3]) 
-                    };
+                        Convert.ToInt32(list[3])
+                    ];
                 }
                 else
                 {
@@ -69,36 +66,36 @@ public class LibRawLoader : IRawImageLoader
                     if (indexer != null)
                     {
                         blackLevel = new int[4];
-                        for (int i = 0; i < 4; i++)
+                        for (var i = 0; i < 4; i++)
                         {
-                            var val = indexer.GetValue(perChannelBlack, new object[] { i });
+                            var val = indexer.GetValue(perChannelBlack, [i]);
                             blackLevel[i] = Convert.ToInt32(val);
                         }
                     }
                     else
                     {
                         // Last resort: try to convert to string and parse, or use base Black
-                        blackLevel = new int[] { color.Black, color.Black, color.Black, color.Black };
+                        blackLevel = [color.Black, color.Black, color.Black, color.Black];
                     }
                 }
             }
             catch
             {
                 // Fallback to single value if per-channel not available
-                blackLevel = new int[] { color.Black, color.Black, color.Black, color.Black };
+                blackLevel = [color.Black, color.Black, color.Black, color.Black];
             }
             
             // Get camera multipliers for white balance
-            float[] colorFactors = new float[4];
+            var colorFactors = new float[4];
             var camMult = color.CameraWhiteBalance;
-            for (int i = 0; i < Math.Min(4, camMult?.Length ?? 0); i++)
+            for (var i = 0; i < Math.Min(4, camMult?.Length ?? 0); i++)
             {
                 colorFactors[i] = camMult![i];
             }
             
             // Get ISO and shutter for exposure calculation
             var other = iProcessor.Other;
-            float isoExposureTime = other.IsoSpeed * (float)other.Shutter.TotalSeconds;
+            var isoExposureTime = other.IsoSpeed * (float)other.Shutter.TotalSeconds;
             
             // Extract DNG-specific metadata that LibRaw doesn't expose
             // (ColorMatrix1/2, CalibrationIlluminant1/2, AsShotNeutral, ExposureBias)
@@ -106,7 +103,7 @@ public class LibRawLoader : IRawImageLoader
             
             // Access raw Bayer data directly (single-channel CFA)
             var rawData = iProcessor.RawData;
-            IntPtr bufferPtr = rawData.Buffer;
+            var bufferPtr = rawData.Buffer;
             
             // Validate buffer
             if (bufferPtr == IntPtr.Zero)
@@ -115,7 +112,7 @@ public class LibRawLoader : IRawImageLoader
             }
             
             // Raw Bayer data is single-channel 16-bit
-            int pixelCount = rawWidth * rawHeight;
+            var pixelCount = rawWidth * rawHeight;
             
             // Create the RawImage with single-channel Bayer data
             var rawImage = new RawImage
@@ -124,16 +121,16 @@ public class LibRawLoader : IRawImageLoader
                 Width = rawWidth,  // Use raw dimensions for Bayer data
                 Height = rawHeight,
                 WhiteLevel = whiteLevel,
-                // Prefer BlackLevel from DNG metadata (more reliable for some cameras like DJI)
+                // Prefer BlackLevels from DNG metadata (more reliable for some cameras like DJI)
                 // Fall back to LibRaw's value if DNG tag not available or empty
-                BlackLevel = dngMeta.BlackLevel.Length >= 4 
-                    ? dngMeta.BlackLevel 
-                    : (dngMeta.BlackLevel.Length > 0 
-                        ? Enumerable.Repeat(dngMeta.BlackLevel[0], 4).ToArray()
+                BlackLevels = dngMeta.BlackLevels.Length >= 4 
+                    ? dngMeta.BlackLevels 
+                    : (dngMeta.BlackLevels.Length > 0 
+                        ? Enumerable.Repeat(dngMeta.BlackLevels[0], 4).ToArray()
                         : blackLevel),
                 ExposureBias = dngMeta.ExposureBias,
-                IsoExposureTime = isoExposureTime,
-                ColorFactors = colorFactors,
+                IsoSpeedExposureTimeProduct = isoExposureTime,
+                ColorChannelMultipliers = colorFactors,
                 MosaicPatternWidth = isXTrans ? 6 : 2,
                 
                 // CFA pattern from LibRaw
@@ -151,13 +148,12 @@ public class LibRawLoader : IRawImageLoader
                 CameraModel = cameraModel,
                 
                 // Flag to indicate this is raw Bayer, not demosaiced RGB
-                IsBayerData = true
+                IsBayerData = true,
+                // Copy raw Bayer data (single-channel 16-bit)
+                Data = new ushort[pixelCount]
             };
 
-            // Copy raw Bayer data (single-channel 16-bit)
-            rawImage.Data = new ushort[pixelCount];
-            
-            ushort* srcPixels = (ushort*)bufferPtr;
+            var srcPixels = (ushort*)bufferPtr;
             fixed (ushort* dst = rawImage.Data)
             {
                 Buffer.MemoryCopy(srcPixels, dst, pixelCount * sizeof(ushort), pixelCount * sizeof(ushort));
@@ -202,10 +198,10 @@ public class LibRawLoader : IRawImageLoader
         // Quick lookup for common patterns
         return filters switch
         {
-            0x94949494 => new int[] { 0, 1, 1, 2 }, // RGGB
-            0x61616161 => new int[] { 1, 0, 2, 1 }, // GRBG
-            0x49494949 => new int[] { 1, 2, 0, 1 }, // GBRG
-            0x16161616 => new int[] { 2, 1, 1, 0 }, // BGGR
+            0x94949494 => [0, 1, 1, 2], // RGGB
+            0x61616161 => [1, 0, 2, 1], // GRBG
+            0x49494949 => [1, 2, 0, 1], // GBRG
+            0x16161616 => [2, 1, 1, 0], // BGGR
             _ => DecodeGenericCfaPattern(filters)
         };
     }
@@ -223,7 +219,7 @@ public class LibRawLoader : IRawImageLoader
         // Extract colors for positions (0,0), (0,1), (1,0), (1,1)
         // Using the COLOR macro approach: (filters >> ((((row) << 1 & 14) + ((col) & 1)) << 1)) & 3
         
-        int[] pattern = new int[4];
+        var pattern = new int[4];
         
         // Position (0,0): row=0, col=0
         pattern[0] = (int)((filters >> ((((0) << 1 & 14) + ((0) & 1)) << 1)) & 3);
@@ -236,7 +232,7 @@ public class LibRawLoader : IRawImageLoader
         
         // LibRaw uses: 0=R, 1=G, 2=B, 3=G (for the second green)
         // Normalize G values (3 -> 1)
-        for (int i = 0; i < 4; i++)
+        for (var i = 0; i < 4; i++)
         {
             if (pattern[i] == 3) pattern[i] = 1;
         }
@@ -265,7 +261,7 @@ public class LibRawLoader : IRawImageLoader
                     var exposureBiasRational = exifSubIfd.GetRational(ExifDirectoryBase.TagExposureBias);
                     if (exposureBiasRational.Denominator != 0)
                     {
-                        double ev = (double)exposureBiasRational.Numerator / exposureBiasRational.Denominator;
+                        var ev = (double)exposureBiasRational.Numerator / exposureBiasRational.Denominator;
                         result.ExposureBias = (int)Math.Round(ev * 100);
                     }
                 }
@@ -298,13 +294,13 @@ public class LibRawLoader : IRawImageLoader
                     }
 
                     // DNG Tag 50778 = CalibrationIlluminant1
-                    if (result.CalibrationIlluminant1 == 0 && directory.TryGetInt32(50778, out int ci1))
+                    if (result.CalibrationIlluminant1 == 0 && directory.TryGetInt32(50778, out var ci1))
                     {
                         result.CalibrationIlluminant1 = ci1;
                     }
 
                     // DNG Tag 50779 = CalibrationIlluminant2
-                    if (result.CalibrationIlluminant2 == 0 && directory.TryGetInt32(50779, out int ci2))
+                    if (result.CalibrationIlluminant2 == 0 && directory.TryGetInt32(50779, out var ci2))
                     {
                         result.CalibrationIlluminant2 = ci2;
                     }
@@ -319,13 +315,13 @@ public class LibRawLoader : IRawImageLoader
                         }
                     }
 
-                    // DNG Tag 50714 = BlackLevel (RATIONAL or LONG array)
-                    if (result.BlackLevel.Length == 0)
+                    // DNG Tag 50714 = BlackLevels (RATIONAL or LONG array)
+                    if (result.BlackLevels.Length == 0)
                     {
                         var blObj = directory.GetObject(50714);
                         if (blObj != null)
                         {
-                            result.BlackLevel = ExtractBlackLevelArray(blObj);
+                            result.BlackLevels = ExtractBlackLevelsArray(blObj);
                         }
                     }
                 }
@@ -348,38 +344,38 @@ public class LibRawLoader : IRawImageLoader
     /// </summary>
     private static double[] ExtractRationalArray(object? obj)
     {
-        if (obj == null) return Array.Empty<double>();
-
-        if (obj is MetadataExtractor.Rational[] rationals)
+        switch (obj)
         {
-            return rationals.Select(r => r.Denominator != 0 ? (double)r.Numerator / r.Denominator : 0).ToArray();
-        }
-        
-        if (obj is object[] objArray)
-        {
-            var resultList = new List<double>();
-            foreach (var item in objArray)
+            case null:
+                return [];
+            case Rational[] rationals:
+                return rationals.Select(r => r.Denominator != 0 ? (double)r.Numerator / r.Denominator : 0).ToArray();
+            case object[] objArray:
             {
-                if (item is MetadataExtractor.Rational r && r.Denominator != 0)
+                var resultList = new List<double>();
+                foreach (var item in objArray)
                 {
-                    resultList.Add((double)r.Numerator / r.Denominator);
+                    if (item is Rational r && r.Denominator != 0)
+                    {
+                        resultList.Add((double)r.Numerator / r.Denominator);
+                    }
                 }
+                return resultList.ToArray();
             }
-            return resultList.ToArray();
+            default:
+                return [];
         }
-
-        return Array.Empty<double>();
     }
 
     /// <summary>
-    /// Extracts BlackLevel array from DNG tag 50714 (can be RATIONAL, LONG, or SHORT).
+    /// Extracts BlackLevels array from DNG tag 50714 (can be RATIONAL, LONG, or SHORT).
     /// </summary>
-    private static int[] ExtractBlackLevelArray(object? obj)
+    private static int[] ExtractBlackLevelsArray(object? obj)
     {
-        if (obj == null) return Array.Empty<int>();
+        if (obj == null) return [];
 
-        // Handle RATIONAL array (most common for DNG BlackLevel)
-        if (obj is MetadataExtractor.Rational[] rationals)
+        // Handle RATIONAL array (most common for DNG BlackLevels)
+        if (obj is Rational[] rationals)
         {
             return rationals.Select(r => r.Denominator != 0 ? (int)(r.Numerator / r.Denominator) : 0).ToArray();
         }
@@ -406,7 +402,7 @@ public class LibRawLoader : IRawImageLoader
             var resultList = new List<int>();
             foreach (var item in objArray)
             {
-                if (item is MetadataExtractor.Rational r && r.Denominator != 0)
+                if (item is Rational r && r.Denominator != 0)
                 {
                     resultList.Add((int)(r.Numerator / r.Denominator));
                 }
@@ -426,7 +422,7 @@ public class LibRawLoader : IRawImageLoader
             return resultList.ToArray();
         }
 
-        return Array.Empty<int>();
+        return [];
     }
 
     /// <summary>
@@ -435,12 +431,12 @@ public class LibRawLoader : IRawImageLoader
     private class DngMetadataResult
     {
         public int ExposureBias { get; set; }
-        public double[] ColorMatrix1 { get; set; } = Array.Empty<double>();
-        public double[] ColorMatrix2 { get; set; } = Array.Empty<double>();
+        public double[] ColorMatrix1 { get; set; } = [];
+        public double[] ColorMatrix2 { get; set; } = [];
         public int CalibrationIlluminant1 { get; set; }
         public int CalibrationIlluminant2 { get; set; }
-        public double[] AsShotNeutral { get; set; } = Array.Empty<double>();
-        public int[] BlackLevel { get; set; } = Array.Empty<int>();
+        public double[] AsShotNeutral { get; set; } = [];
+        public int[] BlackLevels { get; set; } = [];
     }
 
     /// <summary>
@@ -450,8 +446,8 @@ public class LibRawLoader : IRawImageLoader
     /// <param name="model">Camera model from LibRaw</param>
     private static bool IsXTransSensor(string make, string model)
     {
-        string makeUpper = make?.ToUpperInvariant() ?? "";
-        string modelUpper = model?.ToUpperInvariant() ?? "";
+        var makeUpper = make?.ToUpperInvariant() ?? "";
+        var modelUpper = model?.ToUpperInvariant() ?? "";
         
         // Fujifilm uses X-Trans in most of their X-series cameras
         if (makeUpper.Contains("FUJI"))

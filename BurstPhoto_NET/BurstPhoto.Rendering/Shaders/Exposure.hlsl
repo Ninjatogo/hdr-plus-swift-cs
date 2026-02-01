@@ -9,6 +9,7 @@
 // Constant Buffers
 // -------------------------------------------------------------------------
 
+[[vk::binding(0, 0)]]
 cbuffer ExposureParams : register(b0)
 {
     float WhiteLevel;
@@ -20,22 +21,33 @@ cbuffer ExposureParams : register(b0)
     int TargetExposure;
     int MosaicPatternWidth;
     int TextureWidth; // For max_x kernel
-    
+
     // Padding
 };
 
 // -------------------------------------------------------------------------
 // Resources
 // -------------------------------------------------------------------------
+// NOTE: Using explicit [[vk::binding]] attributes to match C# descriptor layout.
+// C# binds: Binding 0 (b0), Binding 1 (t0), Binding 2 (t1), Binding 3 (t2), Binding 4 (t3), Binding 10 (u0), Binding 11 (u1)
 
 // Generic slots
-Texture2D<float> InTexture      : register(t0); 
-Texture2D<float> InBlurred      : register(t1); 
+[[vk::binding(1, 0)]]
+Texture2D<float> InTexture      : register(t0);
 
+[[vk::binding(2, 0)]]
+Texture2D<float> InBlurred      : register(t1);
+
+[[vk::binding(3, 0)]]
 StructuredBuffer<float> BlackLevelsMean : register(t2); // Array of black levels
+
+[[vk::binding(4, 0)]]
 StructuredBuffer<float> MaxTextureBuffer : register(t3); // Buffer containing max value
 
-RWTexture2D<float> OutTexture   : register(u0); 
+[[vk::binding(10, 0)]]
+RWTexture2D<float> OutTexture   : register(u0);
+
+[[vk::binding(11, 0)]]
 RWBuffer<float> OutBuffer       : register(u1); // For reduction output
 
 // -------------------------------------------------------------------------

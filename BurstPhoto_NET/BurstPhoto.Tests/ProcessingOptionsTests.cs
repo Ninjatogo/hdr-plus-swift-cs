@@ -1,6 +1,5 @@
 using BurstPhoto.Core.Errors;
 using BurstPhoto.Core.Models;
-using Xunit;
 
 namespace BurstPhoto.Tests;
 
@@ -30,9 +29,9 @@ public class ProcessingOptionsTests
     [Theory]
     [InlineData(ExposureControlOption.Off, "")]
     [InlineData(ExposureControlOption.LinearFullRange, "_l0")]
-    [InlineData(ExposureControlOption.Linear1EV, "_l1")]
-    [InlineData(ExposureControlOption.Curve0EV, "_nl0")]
-    [InlineData(ExposureControlOption.Curve1EV, "_nl1")]
+    [InlineData(ExposureControlOption.Linear1Ev, "_l1")]
+    [InlineData(ExposureControlOption.Curve0Ev, "_nl0")]
+    [InlineData(ExposureControlOption.Curve1Ev, "_nl1")]
     public void GetExposureControlSuffix_ReturnsCorrectSuffix(ExposureControlOption option, string expected)
     {
         Assert.Equal(expected, ProcessingOptions.GetExposureControlSuffix(option));

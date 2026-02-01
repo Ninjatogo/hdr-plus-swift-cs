@@ -1,9 +1,5 @@
-using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
-using System.IO;
-using System.Linq;
 using System.Text.RegularExpressions;
 using BitMiracle.LibTiff.Classic;
 
@@ -60,16 +56,16 @@ public static class DngComparisonHelper
         if (tiff == null)
             return null;
         
-        int width = tiff.GetField(TiffTag.IMAGEWIDTH)?[0].ToInt() ?? 0;
-        int height = tiff.GetField(TiffTag.IMAGELENGTH)?[0].ToInt() ?? 0;
-        int bitsPerSample = tiff.GetField(TiffTag.BITSPERSAMPLE)?[0].ToInt() ?? 16;
-        int samplesPerPixel = tiff.GetField(TiffTag.SAMPLESPERPIXEL)?[0].ToInt() ?? 1;
+        var width = tiff.GetField(TiffTag.IMAGEWIDTH)?[0].ToInt() ?? 0;
+        var height = tiff.GetField(TiffTag.IMAGELENGTH)?[0].ToInt() ?? 0;
+        var bitsPerSample = tiff.GetField(TiffTag.BITSPERSAMPLE)?[0].ToInt() ?? 16;
+        var samplesPerPixel = tiff.GetField(TiffTag.SAMPLESPERPIXEL)?[0].ToInt() ?? 1;
         
         if (width == 0 || height == 0)
             return null;
         
         // For compressed DNGs, we need to use decoded strips/tiles
-        int compression = tiff.GetField(TiffTag.COMPRESSION)?[0].ToInt() ?? 1;
+        var compression = tiff.GetField(TiffTag.COMPRESSION)?[0].ToInt() ?? 1;
         
         // If JPEG compressed, LibTiff.Net may not be able to decode directly
         if (compression == 7) // JPEG
@@ -79,18 +75,18 @@ public static class DngComparisonHelper
         }
         
         // Read strips for uncompressed
-        int stripCount = tiff.NumberOfStrips();
-        int pixelCount = width * height * samplesPerPixel;
-        ushort[] pixels = new ushort[pixelCount];
+        var stripCount = tiff.NumberOfStrips();
+        var pixelCount = width * height * samplesPerPixel;
+        var pixels = new ushort[pixelCount];
         
-        int offset = 0;
-        for (int strip = 0; strip < stripCount; strip++)
+        var offset = 0;
+        for (var strip = 0; strip < stripCount; strip++)
         {
-            byte[] buffer = new byte[tiff.StripSize()];
-            int read = tiff.ReadEncodedStrip(strip, buffer, 0, buffer.Length);
+            var buffer = new byte[tiff.StripSize()];
+            var read = tiff.ReadEncodedStrip(strip, buffer, 0, buffer.Length);
             
             // Convert bytes to ushorts
-            for (int i = 0; i < read && offset < pixels.Length; i += 2)
+            for (var i = 0; i < read && offset < pixels.Length; i += 2)
             {
                 if (i + 1 < read)
                 {
@@ -119,11 +115,11 @@ public static class DngComparisonHelper
         
         double sumAbsError = 0;
         double sumSquaredError = 0;
-        int matchingPixels = 0;
+        var matchingPixels = 0;
         
-        for (int i = 0; i < expected.Length; i++)
+        for (var i = 0; i < expected.Length; i++)
         {
-            int diff = Math.Abs(expected[i] - actual[i]);
+            var diff = Math.Abs(expected[i] - actual[i]);
             sumAbsError += diff;
             sumSquaredError += (double)diff * diff;
             
@@ -131,10 +127,10 @@ public static class DngComparisonHelper
                 matchingPixels++;
         }
         
-        double mae = sumAbsError / expected.Length;
-        double rmse = Math.Sqrt(sumSquaredError / expected.Length);
-        double psnr = rmse > 0 ? 20 * Math.Log10(65535.0 / rmse) : double.PositiveInfinity;
-        double percentMatch = 100.0 * matchingPixels / expected.Length;
+        var mae = sumAbsError / expected.Length;
+        var rmse = Math.Sqrt(sumSquaredError / expected.Length);
+        var psnr = rmse > 0 ? 20 * Math.Log10(65535.0 / rmse) : double.PositiveInfinity;
+        var percentMatch = 100.0 * matchingPixels / expected.Length;
         
         return new PixelComparisonResult(mae, rmse, psnr, percentMatch, false);
     }
@@ -145,17 +141,17 @@ public static class DngComparisonHelper
                           .Select(l => l.Trim())
                           .ToList();
         
-        int width = ParseIntField(lines, "Image Width");
-        int height = ParseIntField(lines, "Image Height");
-        string photometric = ParseStringField(lines, "Photometric Interpretation") ?? "Unknown";
-        int[] cfaPattern = ParseIntArrayField(lines, "CFA Pattern 2") ?? Array.Empty<int>();
-        int[] blackLevel = ParseIntArrayField(lines, "Black Level") ?? Array.Empty<int>();
-        int whiteLevel = ParseIntField(lines, "White Level");
-        double[] colorMatrix1 = ParseDoubleArrayField(lines, "Color Matrix 1") ?? Array.Empty<double>();
-        double[] asShotNeutral = ParseDoubleArrayField(lines, "As Shot Neutral") ?? Array.Empty<double>();
-        int bitsPerSample = ParseIntField(lines, "Bits Per Sample");
-        int samplesPerPixel = ParseIntField(lines, "Samples Per Pixel");
-        string compression = ParseStringField(lines, "Compression") ?? "Unknown";
+        var width = ParseIntField(lines, "Image Width");
+        var height = ParseIntField(lines, "Image Height");
+        var photometric = ParseStringField(lines, "Photometric Interpretation") ?? "Unknown";
+        var cfaPattern = ParseIntArrayField(lines, "CFA Pattern 2") ?? [];
+        var blackLevel = ParseIntArrayField(lines, "Black Level") ?? [];
+        var whiteLevel = ParseIntField(lines, "White Level");
+        var colorMatrix1 = ParseDoubleArrayField(lines, "Color Matrix 1") ?? [];
+        var asShotNeutral = ParseDoubleArrayField(lines, "As Shot Neutral") ?? [];
+        var bitsPerSample = ParseIntField(lines, "Bits Per Sample");
+        var samplesPerPixel = ParseIntField(lines, "Samples Per Pixel");
+        var compression = ParseStringField(lines, "Compression") ?? "Unknown";
         
         return new DngMetadata(
             Width: width,
@@ -185,14 +181,14 @@ public static class DngComparisonHelper
         {
             var dims = value.Split('x');
             if (fieldName.Contains("Width", StringComparison.OrdinalIgnoreCase) && dims.Length > 0)
-                return int.TryParse(dims[0], out int w) ? w : 0;
+                return int.TryParse(dims[0], out var w) ? w : 0;
             if (fieldName.Contains("Height", StringComparison.OrdinalIgnoreCase) && dims.Length > 1)
-                return int.TryParse(dims[1], out int h) ? h : 0;
+                return int.TryParse(dims[1], out var h) ? h : 0;
         }
         
         // Try parsing first number
         var match = Regex.Match(value, @"[\d]+");
-        if (match.Success && int.TryParse(match.Value, out int result))
+        if (match.Success && int.TryParse(match.Value, out var result))
             return result;
         
         return 0;
@@ -221,7 +217,7 @@ public static class DngComparisonHelper
         
         var value = parts[1].Trim();
         var numbers = Regex.Matches(value, @"-?[\d]+")
-                           .Select(m => int.TryParse(m.Value, out int n) ? n : 0)
+                           .Select(m => int.TryParse(m.Value, out var n) ? n : 0)
                            .ToArray();
         
         return numbers.Length > 0 ? numbers : null;
@@ -237,7 +233,7 @@ public static class DngComparisonHelper
         
         var value = parts[1].Trim();
         var numbers = Regex.Matches(value, @"-?[\d.]+")
-                           .Select(m => double.TryParse(m.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out double n) ? n : 0)
+                           .Select(m => double.TryParse(m.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var n) ? n : 0)
                            .ToArray();
         
         return numbers.Length > 0 ? numbers : null;

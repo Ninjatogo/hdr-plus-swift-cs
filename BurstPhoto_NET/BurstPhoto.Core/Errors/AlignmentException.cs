@@ -53,7 +53,7 @@ public class AlignmentException : Exception
 /// <summary>
 /// Types of I/O errors that can occur during image loading or saving.
 /// </summary>
-public enum ImageIOErrorType
+public enum ImageIoErrorType
 {
     LoadError,
     MetalError,
@@ -63,33 +63,33 @@ public enum ImageIOErrorType
 /// <summary>
 /// Exception thrown when image I/O operations fail.
 /// </summary>
-public class ImageIOException : Exception
+public class ImageIoException : Exception
 {
-    public ImageIOErrorType ErrorType { get; }
+    public ImageIoErrorType ErrorType { get; }
 
-    public ImageIOException(ImageIOErrorType errorType)
+    public ImageIoException(ImageIoErrorType errorType)
         : base(GetMessage(errorType))
     {
         ErrorType = errorType;
     }
 
-    public ImageIOException(ImageIOErrorType errorType, string message)
+    public ImageIoException(ImageIoErrorType errorType, string message)
         : base(message)
     {
         ErrorType = errorType;
     }
 
-    public ImageIOException(ImageIOErrorType errorType, string message, Exception innerException)
+    public ImageIoException(ImageIoErrorType errorType, string message, Exception innerException)
         : base(message, innerException)
     {
         ErrorType = errorType;
     }
 
-    private static string GetMessage(ImageIOErrorType errorType) => errorType switch
+    private static string GetMessage(ImageIoErrorType errorType) => errorType switch
     {
-        ImageIOErrorType.LoadError => "Failed to load image.",
-        ImageIOErrorType.MetalError => "GPU/compute error occurred.",
-        ImageIOErrorType.SaveError => "Failed to save image.",
+        ImageIoErrorType.LoadError => "Failed to load image.",
+        ImageIoErrorType.MetalError => "GPU/compute error occurred.",
+        ImageIoErrorType.SaveError => "Failed to save image.",
         _ => "An I/O error occurred."
     };
 }

@@ -1,26 +1,118 @@
-using System;
 using Silk.NET.Vulkan;
 
 namespace BurstPhoto.Rendering;
 
+/// <summary>
+/// Represents a GPU image/texture managed through Vulkan.
+/// </summary>
+/// <remarks>
+/// This class encapsulates Vulkan image creation, memory allocation, and data transfer operations.
+/// It supports:
+/// <list type="bullet">
+///   <item><description>2D and 3D images with various formats</description></item>
+///   <item><description>Automatic image view creation</description></item>
+///   <item><description>Layout transitions with proper pipeline barriers</description></item>
+///   <item><description>CPU-to-GPU and GPU-to-CPU data transfers via staging buffers</description></item>
+/// </list>
+/// </remarks>
 public unsafe class VulkanImage : IDisposable
 {
+    #region Constants
+
+    /// <summary>
+    /// Number of mip levels for this image (always 1 for compute textures).
+    /// </summary>
+    private const uint MipLevelCount = 1;
+
+    /// <summary>
+    /// Number of array layers for this image (always 1 for non-array textures).
+    /// </summary>
+    private const uint ArrayLayerCount = 1;
+
+    #endregion
+
+    #region Private Fields
+
     private readonly VulkanContext _ctx;
+
+    #endregion
+
+    #region Public Properties
+
+    /// <summary>
+    /// Gets the native Vulkan image handle.
+    /// </summary>
     public Image Handle { get; private set; }
+
+    /// <summary>
+    /// Gets the device memory backing this image.
+    /// </summary>
     public DeviceMemory Memory { get; private set; }
+
+    /// <summary>
+    /// Gets the image view for shader access.
+    /// </summary>
     public ImageView View { get; private set; }
+
+    /// <summary>
+    /// Gets the width of the image in pixels.
+    /// </summary>
     public uint Width { get; }
+
+    /// <summary>
+    /// Gets the height of the image in pixels.
+    /// </summary>
     public uint Height { get; }
+
+    /// <summary>
+    /// Gets the depth of the image (1 for 2D images, greater for 3D images).
+    /// </summary>
     public uint Depth { get; }
+
+    /// <summary>
+    /// Gets the pixel format of the image.
+    /// </summary>
     public Format Format { get; }
+
+    /// <summary>
+    /// Gets the current layout of the image. Layout transitions are tracked automatically.
+    /// </summary>
     public ImageLayout CurrentLayout { get; private set; }
+
+    /// <summary>
+    /// Gets the view type (2D or 3D) for shader binding.
+    /// </summary>
     public ImageViewType ViewType { get; }
 
+    #endregion
+
+    #region Constructors
+
+    /// <summary>
+    /// Creates a new 2D Vulkan image.
+    /// </summary>
+    /// <param name="ctx">The Vulkan context.</param>
+    /// <param name="width">Width in pixels.</param>
+    /// <param name="height">Height in pixels.</param>
+    /// <param name="format">Pixel format.</param>
+    /// <param name="usage">Intended usage flags (sampled, storage, transfer, etc.).</param>
+    /// <param name="properties">Memory property flags (default: device-local for GPU-only access).</param>
     public VulkanImage(VulkanContext ctx, uint width, uint height, Format format, ImageUsageFlags usage, MemoryPropertyFlags properties = MemoryPropertyFlags.DeviceLocalBit)
-        : this(ctx, width, height, 1, format, usage, ImageViewType.Type2D, properties)
+        : this(ctx, width, height, depth: 1, format, usage, ImageViewType.Type2D, properties)
     {
     }
 
+    /// <summary>
+    /// Creates a new 2D or 3D Vulkan image.
+    /// </summary>
+    /// <param name="ctx">The Vulkan context.</param>
+    /// <param name="width">Width in pixels.</param>
+    /// <param name="height">Height in pixels.</param>
+    /// <param name="depth">Depth in pixels (1 for 2D images).</param>
+    /// <param name="format">Pixel format.</param>
+    /// <param name="usage">Intended usage flags.</param>
+    /// <param name="viewType">Image view type (2D or 3D).</param>
+    /// <param name="properties">Memory property flags.</param>
     public VulkanImage(VulkanContext ctx, uint width, uint height, uint depth, Format format, ImageUsageFlags usage, ImageViewType viewType, MemoryPropertyFlags properties = MemoryPropertyFlags.DeviceLocalBit)
     {
         _ctx = ctx;
@@ -31,22 +123,29 @@ public unsafe class VulkanImage : IDisposable
         ViewType = viewType;
         CurrentLayout = ImageLayout.Undefined;
 
-        CreateImage(usage);
-        AllocateMemory(properties);
-        CreateImageView();
+        CreateNativeImage(usage);
+        AllocateDeviceMemory(properties);
+        CreateNativeImageView();
     }
 
-    private void CreateImage(ImageUsageFlags usage)
+    #endregion
+
+    #region Private Initialization Methods
+
+    /// <summary>
+    /// Creates the native Vulkan image object.
+    /// </summary>
+    private void CreateNativeImage(ImageUsageFlags usage)
     {
         var imageType = Depth > 1 ? ImageType.Type3D : ImageType.Type2D;
-        
-        var imageInfo = new ImageCreateInfo
+
+        var imageCreateInfo = new ImageCreateInfo
         {
             SType = StructureType.ImageCreateInfo,
             ImageType = imageType,
             Extent = new Extent3D(Width, Height, Depth),
-            MipLevels = 1,
-            ArrayLayers = 1,
+            MipLevels = MipLevelCount,
+            ArrayLayers = ArrayLayerCount,
             Format = Format,
             Tiling = ImageTiling.Optimal,
             InitialLayout = ImageLayout.Undefined,
@@ -55,36 +154,42 @@ public unsafe class VulkanImage : IDisposable
             Samples = SampleCountFlags.Count1Bit
         };
 
-        if (_ctx.Vk.CreateImage(_ctx.Device, in imageInfo, null, out var image) != Result.Success)
+        if (_ctx.Vk.CreateImage(_ctx.Device, in imageCreateInfo, null, out var nativeImage) != Result.Success)
         {
-            throw new Exception("Failed to create image!");
+            throw new Exception("Failed to create Vulkan image");
         }
-        Handle = image;
+        Handle = nativeImage;
     }
 
-    private void AllocateMemory(MemoryPropertyFlags properties)
+    /// <summary>
+    /// Allocates and binds device memory for the image.
+    /// </summary>
+    private void AllocateDeviceMemory(MemoryPropertyFlags properties)
     {
-        _ctx.Vk.GetImageMemoryRequirements(_ctx.Device, Handle, out var memRequirements);
+        _ctx.Vk.GetImageMemoryRequirements(_ctx.Device, Handle, out var memoryRequirements);
 
-        var allocInfo = new MemoryAllocateInfo
+        var memoryAllocateInfo = new MemoryAllocateInfo
         {
             SType = StructureType.MemoryAllocateInfo,
-            AllocationSize = memRequirements.Size,
-            MemoryTypeIndex = FindMemoryType(memRequirements.MemoryTypeBits, properties)
+            AllocationSize = memoryRequirements.Size,
+            MemoryTypeIndex = FindSuitableMemoryType(memoryRequirements.MemoryTypeBits, properties)
         };
 
-        if (_ctx.Vk.AllocateMemory(_ctx.Device, in allocInfo, null, out var memory) != Result.Success)
+        if (_ctx.Vk.AllocateMemory(_ctx.Device, in memoryAllocateInfo, null, out var deviceMemory) != Result.Success)
         {
-            throw new Exception("Failed to allocate image memory!");
+            throw new Exception("Failed to allocate image device memory");
         }
-        Memory = memory;
+        Memory = deviceMemory;
 
-        _ctx.Vk.BindImageMemory(_ctx.Device, Handle, Memory, 0);
+        _ctx.Vk.BindImageMemory(_ctx.Device, Handle, Memory, memoryOffset: 0);
     }
 
-    private void CreateImageView()
+    /// <summary>
+    /// Creates an image view for shader access.
+    /// </summary>
+    private void CreateNativeImageView()
     {
-        var viewInfo = new ImageViewCreateInfo
+        var imageViewCreateInfo = new ImageViewCreateInfo
         {
             SType = StructureType.ImageViewCreateInfo,
             Image = Handle,
@@ -94,27 +199,41 @@ public unsafe class VulkanImage : IDisposable
             {
                 AspectMask = ImageAspectFlags.ColorBit,
                 BaseMipLevel = 0,
-                LevelCount = 1,
+                LevelCount = MipLevelCount,
                 BaseArrayLayer = 0,
-                LayerCount = 1
+                LayerCount = ArrayLayerCount
             }
         };
 
-        if (_ctx.Vk.CreateImageView(_ctx.Device, in viewInfo, null, out var view) != Result.Success)
+        if (_ctx.Vk.CreateImageView(_ctx.Device, in imageViewCreateInfo, null, out var nativeView) != Result.Success)
         {
-            throw new Exception("Failed to create image view!");
+            throw new Exception("Failed to create image view");
         }
-        View = view;
+        View = nativeView;
     }
 
+    #endregion
+
+    #region Layout Transition
+
+    /// <summary>
+    /// Transitions the image to a new layout with appropriate pipeline barriers.
+    /// </summary>
+    /// <param name="newLayout">The target layout.</param>
+    /// <param name="cmdBuffer">Optional command buffer. If null, a single-time command buffer is used.</param>
+    /// <remarks>
+    /// Layout transitions ensure proper synchronization between pipeline stages.
+    /// The method automatically determines appropriate access masks and pipeline stages
+    /// based on the current and target layouts.
+    /// </remarks>
     public void TransitionLayout(ImageLayout newLayout, CommandBuffer? cmdBuffer = null)
     {
         if (CurrentLayout == newLayout) return;
 
-        bool singleTime = cmdBuffer == null;
-        var cmd = cmdBuffer ?? _ctx.BeginSingleTimeCommands();
+        var usingSingleTimeBuffer = cmdBuffer == null;
+        var commandBuffer = cmdBuffer ?? _ctx.BeginSingleTimeCommands();
 
-        var barrier = new ImageMemoryBarrier
+        var imageBarrier = new ImageMemoryBarrier
         {
             SType = StructureType.ImageMemoryBarrier,
             OldLayout = CurrentLayout,
@@ -126,164 +245,245 @@ public unsafe class VulkanImage : IDisposable
             {
                 AspectMask = ImageAspectFlags.ColorBit,
                 BaseMipLevel = 0,
-                LevelCount = 1,
+                LevelCount = MipLevelCount,
                 BaseArrayLayer = 0,
-                LayerCount = 1
+                LayerCount = ArrayLayerCount
             }
         };
 
-        PipelineStageFlags sourceStage;
-        PipelineStageFlags destinationStage;
+        PipelineStageFlags sourcePipelineStage;
+        PipelineStageFlags destinationPipelineStage;
 
+        // Determine barrier parameters based on layout transition type
         if (CurrentLayout == ImageLayout.Undefined && newLayout == ImageLayout.General)
         {
-            barrier.SrcAccessMask = 0;
-            barrier.DstAccessMask = AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit;
-            sourceStage = PipelineStageFlags.TopOfPipeBit;
-            destinationStage = PipelineStageFlags.ComputeShaderBit;
+            // Undefined -> General: First use in compute shader
+            imageBarrier.SrcAccessMask = 0;
+            imageBarrier.DstAccessMask = AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit;
+            sourcePipelineStage = PipelineStageFlags.TopOfPipeBit;
+            destinationPipelineStage = PipelineStageFlags.ComputeShaderBit;
         }
         else if (CurrentLayout == ImageLayout.Undefined && newLayout == ImageLayout.TransferDstOptimal)
         {
-            barrier.SrcAccessMask = 0;
-            barrier.DstAccessMask = AccessFlags.TransferWriteBit;
-            sourceStage = PipelineStageFlags.TopOfPipeBit;
-            destinationStage = PipelineStageFlags.TransferBit;
+            // Undefined -> TransferDst: Preparing for CPU-to-GPU upload
+            imageBarrier.SrcAccessMask = 0;
+            imageBarrier.DstAccessMask = AccessFlags.TransferWriteBit;
+            sourcePipelineStage = PipelineStageFlags.TopOfPipeBit;
+            destinationPipelineStage = PipelineStageFlags.TransferBit;
         }
         else if (CurrentLayout == ImageLayout.TransferDstOptimal && newLayout == ImageLayout.General)
         {
-            barrier.SrcAccessMask = AccessFlags.TransferWriteBit;
-            barrier.DstAccessMask = AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit;
-            sourceStage = PipelineStageFlags.TransferBit;
-            destinationStage = PipelineStageFlags.ComputeShaderBit;
+            // TransferDst -> General: After upload, ready for compute
+            imageBarrier.SrcAccessMask = AccessFlags.TransferWriteBit;
+            imageBarrier.DstAccessMask = AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit;
+            sourcePipelineStage = PipelineStageFlags.TransferBit;
+            destinationPipelineStage = PipelineStageFlags.ComputeShaderBit;
         }
         else if (CurrentLayout == ImageLayout.General && newLayout == ImageLayout.TransferSrcOptimal)
         {
-            barrier.SrcAccessMask = AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit;
-            barrier.DstAccessMask = AccessFlags.TransferReadBit;
-            sourceStage = PipelineStageFlags.ComputeShaderBit;
-            destinationStage = PipelineStageFlags.TransferBit;
+            // General -> TransferSrc: Preparing for GPU-to-CPU download
+            imageBarrier.SrcAccessMask = AccessFlags.ShaderReadBit | AccessFlags.ShaderWriteBit;
+            imageBarrier.DstAccessMask = AccessFlags.TransferReadBit;
+            sourcePipelineStage = PipelineStageFlags.ComputeShaderBit;
+            destinationPipelineStage = PipelineStageFlags.TransferBit;
         }
         else
         {
-            // Default generic barrier
-            barrier.SrcAccessMask = AccessFlags.MemoryWriteBit | AccessFlags.MemoryReadBit;
-            barrier.DstAccessMask = AccessFlags.MemoryWriteBit | AccessFlags.MemoryReadBit;
-            sourceStage = PipelineStageFlags.AllCommandsBit;
-            destinationStage = PipelineStageFlags.AllCommandsBit;
+            // Generic fallback for unhandled transitions
+            imageBarrier.SrcAccessMask = AccessFlags.MemoryWriteBit | AccessFlags.MemoryReadBit;
+            imageBarrier.DstAccessMask = AccessFlags.MemoryWriteBit | AccessFlags.MemoryReadBit;
+            sourcePipelineStage = PipelineStageFlags.AllCommandsBit;
+            destinationPipelineStage = PipelineStageFlags.AllCommandsBit;
         }
 
-        _ctx.Vk.CmdPipelineBarrier(cmd, sourceStage, destinationStage, 0, 0, null, 0, null, 1, in barrier);
+        _ctx.Vk.CmdPipelineBarrier(commandBuffer, sourcePipelineStage, destinationPipelineStage, 0, 0, null, 0, null, 1, in imageBarrier);
 
-        if (singleTime)
+        if (usingSingleTimeBuffer)
         {
-            _ctx.EndSingleTimeCommands(cmd);
+            _ctx.EndSingleTimeCommands(commandBuffer);
         }
 
         CurrentLayout = newLayout;
     }
 
-    private uint FindMemoryType(uint typeFilter, MemoryPropertyFlags properties)
-    {
-        _ctx.Vk.GetPhysicalDeviceMemoryProperties(_ctx.PhysicalDevice, out var memProperties);
+    #endregion
 
-        for (int i = 0; i < memProperties.MemoryTypeCount; i++)
+    #region Memory Type Selection
+
+    /// <summary>
+    /// Finds a memory type that satisfies the specified requirements.
+    /// </summary>
+    /// <param name="typeFilter">Bitmask of acceptable memory types.</param>
+    /// <param name="requiredProperties">Required memory property flags.</param>
+    /// <returns>Index of a suitable memory type.</returns>
+    private uint FindSuitableMemoryType(uint typeFilter, MemoryPropertyFlags requiredProperties)
+    {
+        _ctx.Vk.GetPhysicalDeviceMemoryProperties(_ctx.PhysicalDevice, out var deviceMemoryProperties);
+
+        for (var memoryTypeIndex = 0; memoryTypeIndex < deviceMemoryProperties.MemoryTypeCount; memoryTypeIndex++)
         {
-            if ((typeFilter & (1 << i)) != 0 && (memProperties.MemoryTypes[i].PropertyFlags & properties) == properties)
+            var isTypeSupported = (typeFilter & (1 << memoryTypeIndex)) != 0;
+            var hasRequiredProperties = (deviceMemoryProperties.MemoryTypes[memoryTypeIndex].PropertyFlags & requiredProperties) == requiredProperties;
+
+            if (isTypeSupported && hasRequiredProperties)
             {
-                return (uint)i;
+                return (uint)memoryTypeIndex;
             }
         }
 
-        throw new Exception("Failed to find suitable memory type!");
+        throw new Exception("Failed to find suitable memory type for image");
     }
 
-    public void SetData<T>(T[] data, CommandBuffer? cmdBuffer = null) where T : unmanaged
+    #endregion
+
+    #region Data Transfer Methods
+
+    /// <summary>
+    /// Uploads data from CPU memory to this image.
+    /// </summary>
+    /// <typeparam name="T">Element type (must be unmanaged).</typeparam>
+    /// <param name="sourceData">Source data array.</param>
+    /// <param name="cmdBuffer">Optional command buffer for batching.</param>
+    /// <remarks>
+    /// Uses a staging buffer to transfer data from host-visible memory to device-local memory.
+    /// The image layout is automatically transitioned as needed.
+    /// </remarks>
+    public void SetData<T>(T[] sourceData, CommandBuffer? cmdBuffer = null) where T : unmanaged
     {
-        ulong size = (ulong)(data.Length * sizeof(T));
-        
-        // create staging buffer
-        using var stagingBuffer = new VulkanBuffer(_ctx, size, BufferUsageFlags.TransferSrcBit, 
+        var dataSizeBytes = (ulong)(sourceData.Length * sizeof(T));
+
+        // Create host-visible staging buffer for CPU-to-GPU transfer
+        using var stagingBuffer = new VulkanBuffer(_ctx, dataSizeBytes, BufferUsageFlags.TransferSrcBit,
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
-            
-        stagingBuffer.SetData(data);
-        
+
+        stagingBuffer.SetData(sourceData);
+
         TransitionLayout(ImageLayout.TransferDstOptimal, cmdBuffer);
-        
-        bool singleTime = cmdBuffer == null;
-        var cmd = cmdBuffer ?? _ctx.BeginSingleTimeCommands();
-        
-        var region = new BufferImageCopy
+
+        var usingSingleTimeBuffer = cmdBuffer == null;
+        var commandBuffer = cmdBuffer ?? _ctx.BeginSingleTimeCommands();
+
+        var copyRegion = new BufferImageCopy
         {
             BufferOffset = 0,
-            BufferRowLength = 0,
-            BufferImageHeight = 0,
-            
+            BufferRowLength = 0,  // Tightly packed
+            BufferImageHeight = 0,  // Tightly packed
+
             ImageSubresource = new ImageSubresourceLayers
             {
                 AspectMask = ImageAspectFlags.ColorBit,
                 MipLevel = 0,
                 BaseArrayLayer = 0,
-                LayerCount = 1
+                LayerCount = ArrayLayerCount
             },
-            
+
             ImageOffset = new Offset3D(0, 0, 0),
             ImageExtent = new Extent3D(Width, Height, 1)
         };
-        
-        _ctx.Vk.CmdCopyBufferToImage(cmd, stagingBuffer.Handle, Handle, ImageLayout.TransferDstOptimal, 1, in region);
-        
-        if (singleTime)
+
+        _ctx.Vk.CmdCopyBufferToImage(commandBuffer, stagingBuffer.Handle, Handle, ImageLayout.TransferDstOptimal, 1, in copyRegion);
+
+        if (usingSingleTimeBuffer)
         {
-            _ctx.EndSingleTimeCommands(cmd);
+            _ctx.EndSingleTimeCommands(commandBuffer);
         }
-        
+
         TransitionLayout(ImageLayout.General, cmdBuffer);
     }
 
+    /// <summary>
+    /// Gets the number of bytes per pixel for the current image format.
+    /// </summary>
+    private int GetBytesPerPixel()
+    {
+        return Format switch
+        {
+            // 32-bit float formats
+            Format.R32Sfloat => 4,
+            Format.R32G32Sfloat => 8,
+            Format.R32G32B32Sfloat => 12,
+            Format.R32G32B32A32Sfloat => 16,
+
+            // 16-bit float formats
+            Format.R16Sfloat => 2,
+            Format.R16G16Sfloat => 4,
+            Format.R16G16B16A16Sfloat => 8,
+
+            // 16-bit integer formats
+            Format.R16G16B16A16Sint => 8,  // 4 x 16-bit signed integers
+            Format.R16Uint => 2,
+
+            // 8-bit formats
+            Format.R8Unorm => 1,
+            Format.R8G8B8A8Unorm => 4,
+
+            _ => throw new NotSupportedException($"Format {Format} not supported for data transfer")
+        };
+    }
+
+    /// <summary>
+    /// Downloads data from this image to CPU memory.
+    /// </summary>
+    /// <typeparam name="T">Element type (must be unmanaged).</typeparam>
+    /// <param name="cmdBuffer">Optional command buffer for batching.</param>
+    /// <param name="wait">Whether to wait for transfer completion (default: true).</param>
+    /// <returns>Array containing the image data.</returns>
+    /// <remarks>
+    /// Uses a staging buffer to transfer data from device-local memory to host-visible memory.
+    /// The returned array size is based on the image dimensions and format, not sizeof(T).
+    /// </remarks>
     public T[] GetData<T>(CommandBuffer? cmdBuffer = null, bool wait = true) where T : unmanaged
     {
-        ulong size = (ulong)(Width * Height * sizeof(T)); // Assuming packed
-         // Note: row alignment might be issue for T[] but for tightly packed formats usually fine.
-         // Image copies to buffer are tightly packed usually if row pitch = width.
-         
-        using var stagingBuffer = new VulkanBuffer(_ctx, size, BufferUsageFlags.TransferDstBit, 
+        // Calculate image size based on format, not the generic type T
+        var bytesPerPixel = GetBytesPerPixel();
+        var imageSizeBytes = (ulong)(Width * Height * bytesPerPixel);
+
+        using var stagingBuffer = new VulkanBuffer(_ctx, imageSizeBytes, BufferUsageFlags.TransferDstBit,
             MemoryPropertyFlags.HostVisibleBit | MemoryPropertyFlags.HostCoherentBit);
-            
+
         TransitionLayout(ImageLayout.TransferSrcOptimal, cmdBuffer);
-        
-        bool singleTime = cmdBuffer == null;
-        var cmd = cmdBuffer ?? _ctx.BeginSingleTimeCommands();
-        
-        var region = new BufferImageCopy
+
+        var usingSingleTimeBuffer = cmdBuffer == null;
+        var commandBuffer = cmdBuffer ?? _ctx.BeginSingleTimeCommands();
+
+        var copyRegion = new BufferImageCopy
         {
-            BufferImageHeight = 0,
-            BufferRowLength = 0,
+            BufferImageHeight = 0,  // Tightly packed
+            BufferRowLength = 0,  // Tightly packed
             BufferOffset = 0,
-            
+
             ImageSubresource = new ImageSubresourceLayers
             {
                 AspectMask = ImageAspectFlags.ColorBit,
-                MipLevel = 0, // Base level only
+                MipLevel = 0,
                 BaseArrayLayer = 0,
-                LayerCount = 1
+                LayerCount = ArrayLayerCount
             },
             ImageOffset = new Offset3D(0, 0, 0),
             ImageExtent = new Extent3D(Width, Height, 1)
         };
-        
-        _ctx.Vk.CmdCopyImageToBuffer(cmd, Handle, ImageLayout.TransferSrcOptimal, stagingBuffer.Handle, 1, in region);
-        
-        if (singleTime)
+
+        _ctx.Vk.CmdCopyImageToBuffer(commandBuffer, Handle, ImageLayout.TransferSrcOptimal, stagingBuffer.Handle, 1, in copyRegion);
+
+        if (usingSingleTimeBuffer)
         {
-            _ctx.EndSingleTimeCommands(cmd);
+            _ctx.EndSingleTimeCommands(commandBuffer);
         }
-        
+
         TransitionLayout(ImageLayout.General, cmdBuffer);
-        
-        ulong count = size / (ulong)sizeof(T);
-        return stagingBuffer.GetData<T>(count);
+
+        // Calculate element count based on actual image data size
+        var elementCount = imageSizeBytes / (ulong)sizeof(T);
+        return stagingBuffer.GetData<T>(elementCount);
     }
 
+    #endregion
+
+    #region IDisposable Implementation
+
+    /// <summary>
+    /// Releases all Vulkan resources associated with this image.
+    /// </summary>
     public void Dispose()
     {
         if (View.Handle != 0)
@@ -302,4 +502,6 @@ public unsafe class VulkanImage : IDisposable
             Memory = default;
         }
     }
+
+    #endregion
 }

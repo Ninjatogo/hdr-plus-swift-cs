@@ -9,20 +9,22 @@
 // Constant Buffers
 // -------------------------------------------------------------------------
 
+// Explicit Vulkan binding: Binding 0, Set 0
+[[vk::binding(0, 0)]]
 cbuffer TextureParams : register(b0)
 {
     float WhiteLevel;
     float BlackLevel;
     float BlackLevelMean;
-    float ScaleFactor; 
-    int CfaPattern; 
+    float ScaleFactor;
+    int CfaPattern;
     int Width;
     int Height;
     int OffsetX;
     int OffsetY;
     int InputWidth;
     int InputHeight;
-    
+
     // Preparation Params
     int PadLeft;
     int PadTop;
@@ -30,13 +32,13 @@ cbuffer TextureParams : register(b0)
     float HotPixelThreshold;
     float HotPixelMultiplicator;
     float CorrectionStrength;
-    
+
     // Blur Params
     int KernelSize;
     int MosaicPatternWidth;
     int TextureSize; // Width or Height depending on direction?
     int Direction; // 0=X, 1=Y
-    
+
     // Add Texture Params
     int NumTextures;
 };
@@ -44,17 +46,39 @@ cbuffer TextureParams : register(b0)
 // -------------------------------------------------------------------------
 // Resources
 // -------------------------------------------------------------------------
+// NOTE: Using explicit [[vk::binding]] attributes to match C# descriptor layout.
+// C# binds resources at: Binding 0 (b0), Binding 1 (t0), Binding 3 (t2), Binding 10 (u10), Binding 12 (u12).
+// register(tN) syntax is kept for HLSL compatibility but overridden by [[vk::binding]] for Vulkan.
 
-// Generic IO
+// Generic IO - Sampled Images (read-only textures)
+[[vk::binding(1, 0)]]
 Texture2D<float> InTextureFloat  : register(t0);
+
+[[vk::binding(2, 0)]]
 Texture2D<uint> InTextureUint    : register(t1);
+
+[[vk::binding(3, 0)]]
 Texture2D<float4> InTextureRGBA  : register(t2);
+
+[[vk::binding(4, 0)]]
 Texture2D<float> AuxTextureFloat : register(t3); // Weight map etc.
+
+[[vk::binding(5, 0)]]
 StructuredBuffer<float> MeanTextureBuffer : register(t4);
+
+[[vk::binding(6, 0)]]
 StructuredBuffer<float> BlackLevels : register(t5);
 
+// Storage Images (read-write textures)
+[[vk::binding(10, 0)]]
 RWTexture2D<float> OutTextureFloat : register(u10);
+
+[[vk::binding(11, 0)]]
 RWTexture2D<uint> OutTextureUint   : register(u11);
+
+[[vk::binding(12, 0)]]
+// NOTE: image_format attribute removed - requires ShaderStorageImageWriteWithoutFormat feature instead
+// [[vk::image_format("rgba32f")]]  // This causes DXC compilation errors on some systems
 RWTexture2D<float4> OutTextureRGBA : register(u12);
 
 // -------------------------------------------------------------------------
@@ -90,7 +114,10 @@ void crop_texture(uint3 DTid : SV_DispatchThreadID)
 void convert_to_rgba(uint3 DTid : SV_DispatchThreadID)
 {
     uint2 gid = DTid.xy;
-    uint2 inPos = gid * 2;
+    
+    // Apply padding offset to skip the padded border and read from actual image data
+    // Swift uses: x = gid.x*2 + crop_x, y = gid.y*2 + crop_y
+    uint2 inPos = uint2(gid.x * 2 + PadLeft, gid.y * 2 + PadTop);
 
     // Direct pack: Read 4 adjacent Bayer pixels into RGBA channels
     // No averaging, no demosaicing - just pack the raw values
@@ -104,10 +131,35 @@ void convert_to_rgba(uint3 DTid : SV_DispatchThreadID)
     OutTextureRGBA[gid] = float4(p0, p1, p2, p3);
 }
 
+// DEBUG_CONVERT_TO_BAYER modes:
+// 0 = Normal operation
+// 1 = Output X coordinate as gradient (to detect X-axis mirroring)
+// 2 = Output Y coordinate as gradient (to detect Y-axis mirroring)
+// 3 = Output block ID to show tile boundaries
+#define DEBUG_CONVERT_TO_BAYER 0
+
 [numthreads(16, 16, 1)]
 void convert_to_bayer(uint3 DTid : SV_DispatchThreadID)
 {
     uint2 gid = DTid.xy;
+
+#if DEBUG_CONVERT_TO_BAYER == 1
+    // X gradient: value increases linearly with X coordinate
+    // If mirrored, you'll see the gradient reverse within blocks
+    OutTextureFloat[gid] = (float)gid.x;
+    return;
+#elif DEBUG_CONVERT_TO_BAYER == 2
+    // Y gradient
+    OutTextureFloat[gid] = (float)gid.y;
+    return;
+#elif DEBUG_CONVERT_TO_BAYER == 3
+    // Block ID pattern - shows which 16x16 workgroup each pixel belongs to
+    uint blockX = gid.x / 16;
+    uint blockY = gid.y / 16;
+    OutTextureFloat[gid] = (float)(blockX * 1000 + blockY);
+    return;
+#endif
+
     uint2 inPos = gid / 2;
     float4 rgba = InTextureRGBA.Load(int3(inPos, 0));
 
@@ -180,6 +232,19 @@ void add_texture(uint3 DTid : SV_DispatchThreadID)
 }
 
 [numthreads(16, 16, 1)]
+void add_texture_rgba(uint3 DTid : SV_DispatchThreadID)
+{
+    // t2=Input RGBA, u12=Accumulator RGBA (RW)
+    // Metal: out_texture += in_texture.r / n_textures (single channel)
+    // Swift mismatch textures use only .r channel
+    float4 inVal = InTextureRGBA.Load(int3(DTid.xy, 0));
+    float4 acc = OutTextureRGBA[DTid.xy]; // Read RW
+    float n = (float)NumTextures;
+    // Only the .r channel matters for mismatch, but accumulate all for consistency
+    OutTextureRGBA[DTid.xy] = acc + inVal / n;
+}
+
+[numthreads(16, 16, 1)]
 void add_texture_weighted(uint3 DTid : SV_DispatchThreadID)
 {
     // t0=Input, t3=Weight, u0=Accumulator
@@ -197,6 +262,7 @@ void add_texture_weighted(uint3 DTid : SV_DispatchThreadID)
 // u11 is OutTextureUint (uint) -> cannot use.
 // u12 is OutTextureRGBA (float4) -> cannot use.
 // Let's add u13
+[[vk::binding(13, 0)]]
 RWTexture2D<float> OutWeightAccum : register(u13);
 
 [numthreads(16, 16, 1)]
@@ -344,43 +410,48 @@ void find_hotpixels_bayer(uint3 DTid : SV_DispatchThreadID)
 [numthreads(16, 16, 1)]
 void prepare_texture_bayer(uint3 DTid : SV_DispatchThreadID)
 {
-    // t0=Input (Uint)
-    // t1=Weight (AuxTextureFloat)
-    // u0=Output (Float)
-    
+    // Port of Metal prepare_texture_bayer
+    // DTid is INPUT coordinate (0 to input_width-1, 0 to input_height-1)
+    // Metal: gid is thread position in input texture
+    // Read from input at gid, write to output at gid + padding
+
     uint2 gid = DTid.xy;
     int x = gid.x;
     int y = gid.y;
-    
+
     uint width, height;
     InTextureUint.GetDimensions(width, height);
-    
-    float val = (float)InTextureUint.Load(int3(gid, 0));
-    float hp_weight = AuxTextureFloat.Load(int3(gid, 0));
-    
-    if (hp_weight > 0.001f && x>=2 && x<width-2 && y>=2 && y<height-2) {
+
+    // Read pixel value from input texture
+    float pixel_value = (float)InTextureUint.Load(int3(gid, 0));
+
+    // Read hotpixel weight
+    float hotpixel_weight = AuxTextureFloat.Load(int3(gid, 0));
+
+    // Apply hotpixel correction if needed
+    if (hotpixel_weight > 0.001f && x >= 2 && x < width-2 && y >= 2 && y < height-2)
+    {
+        // Calculate mean value of 4 surrounding same-color pixels (Bayer distance=2)
         float sum = 0.0f;
-        // Bayer neighbors (same color) are at distance 2
         sum += (float)InTextureUint.Load(int3(x-2, y, 0));
         sum += (float)InTextureUint.Load(int3(x+2, y, 0));
         sum += (float)InTextureUint.Load(int3(x, y-2, 0));
         sum += (float)InTextureUint.Load(int3(x, y+2, 0));
-        
-        val = hp_weight * 0.25f * sum + (1.0f - hp_weight) * val;
+
+        // Blend values and replace hot pixel
+        pixel_value = hotpixel_weight * 0.25f * sum + (1.0f - hotpixel_weight) * pixel_value;
     }
-    
-    float corr = pow(2.0f, (float)ExposureDiff / 100.0f);
-    int p = CfaPattern; // Assuming simple 2x2.
-    // BlackLevel is array? In args: `device float *black_levels`. Input t5.
-    // For Bayer, 4 black levels.
-    // Idx = (y%2)*2 + (x%2).
-    int bl_idx = (y%2)*2 + (x%2);
-    float bl = BlackLevels[bl_idx];
-    
-    val = (val - bl) * corr + bl;
-    val = max(val, 0.0f);
-    
-    OutTextureFloat[uint2(x+PadLeft, y+PadTop)] = val;
+
+    // Calculate exposure correction factor
+    float corr_factor = pow(2.0f, (float)ExposureDiff / 100.0f);
+    float black_level = BlackLevels[(gid.y % 2) * 2 + (gid.x % 2)];
+
+    // Correct exposure
+    pixel_value = (pixel_value - black_level) * corr_factor + black_level;
+    pixel_value = max(pixel_value, 0.0f);
+
+    // Write to output texture with padding offset (matches Metal: gid.x+pad_left, gid.y+pad_top)
+    OutTextureFloat[uint2(gid.x + PadLeft, gid.y + PadTop)] = pixel_value;
 }
 
 [numthreads(16, 16, 1)]
@@ -644,18 +715,73 @@ void sum_row_to_buffer(uint3 DTid : SV_DispatchThreadID)
     // DTid.x = mosaic column index (0 to MosaicPatternWidth-1)
     // DTid.y = mosaic row index
     // We sum all values at row DTid.y where (x % MosaicPatternWidth) == DTid.x
-    
+
     uint inWidth, inHeight;
     InTextureFloat.GetDimensions(inWidth, inHeight);
-    
+
     float total = 0.0f;
     for (uint x = DTid.x; x < inWidth; x += MosaicPatternWidth)
     {
         total += InTextureFloat.Load(int3(x, DTid.y, 0));
     }
-    
+
     // Write to a single output pixel (which will be read back to CPU)
     // Store at (DTid.x, DTid.y) position in output
     OutTextureFloat[DTid.xy] = total;
+}
+
+// -------------------------------------------------------------------------
+// GPU-side Accumulator Blit
+// -------------------------------------------------------------------------
+// Copies a cropped region from source texture and adds it to accumulator.
+// This replaces the CPU-based accumulation loop, eliminating GPU round-trips.
+//
+// Dispatch: (croppedWidth, croppedHeight, 1) threads
+// Params used: OffsetX, OffsetY (source crop offset), PadLeft, PadTop (dest offset), InputWidth (source stride)
+
+[numthreads(16, 16, 1)]
+void accumulate_cropped_region(uint3 DTid : SV_DispatchThreadID)
+{
+    // DTid.xy is the position within the cropped region (0 to croppedWidth-1, 0 to croppedHeight-1)
+    uint2 croppedPos = DTid.xy;
+
+    // Calculate source position (in source texture with crop offset)
+    // OffsetX, OffsetY = cropLeft, cropTop from the source
+    uint2 srcPos = uint2(croppedPos.x + OffsetX, croppedPos.y + OffsetY);
+
+    // Calculate destination position (in accumulator with padding offset)
+    // PadLeft, PadTop = destination padding offset
+    uint2 dstPos = uint2(croppedPos.x + PadLeft, croppedPos.y + PadTop);
+
+    // Read from source (InTextureFloat bound to source Bayer texture)
+    float srcVal = InTextureFloat.Load(int3(srcPos, 0));
+
+    // Read current accumulator value and add
+    float accVal = OutTextureFloat[dstPos];
+    OutTextureFloat[dstPos] = accVal + srcVal;
+}
+
+// -------------------------------------------------------------------------
+// GPU Normalization (divide pixelAccum by weightAccum)
+// -------------------------------------------------------------------------
+// Used in spatial merge mode to normalize accumulated pixels by accumulated weights.
+// This replaces the CPU-based loop: result = pixelAccum / weightAccum
+// Eliminates two GetData() calls and one CPU loop.
+//
+// Bindings:
+// - t0 (InTextureFloat): pixel accumulator
+// - t3 (AuxTextureFloat): weight accumulator
+// - u10 (OutTextureFloat): output (normalized result)
+
+[numthreads(16, 16, 1)]
+void divide_textures(uint3 DTid : SV_DispatchThreadID)
+{
+    float pixelVal = InTextureFloat.Load(int3(DTid.xy, 0));
+    float weightVal = AuxTextureFloat.Load(int3(DTid.xy, 0));
+
+    // Avoid division by zero - if weight is too small, use pixel value directly
+    float result = (weightVal > 0.0001f) ? (pixelVal / weightVal) : pixelVal;
+
+    OutTextureFloat[DTid.xy] = result;
 }
 

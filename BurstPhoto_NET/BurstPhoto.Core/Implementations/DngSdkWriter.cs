@@ -11,9 +11,9 @@ namespace BurstPhoto.Core.Implementations;
 /// </summary>
 public class DngSdkWriter : IRawImageWriter, IDisposable
 {
-    private static bool _initialized = false;
-    private static readonly object _initLock = new();
-    private bool _disposed = false;
+    private static bool _initialized;
+    private static readonly Lock InitLock = new();
+    private bool _disposed;
 
     #region P/Invoke Declarations
 
@@ -27,28 +27,26 @@ public class DngSdkWriter : IRawImageWriter, IDisposable
 
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
     private static extern int write_dng_to_disk(
-        string in_path,
-        string out_path,
-        IntPtr pixel_bytes,
+        string inPath,
+        string outPath,
+        IntPtr pixelBytes,
         int width,
         int height,
-        int white_level);
+        int whiteLevel);
 
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
     private static extern IntPtr get_last_error();
 
     #endregion
 
-    public DngSdkWriter()
-    {
-        EnsureInitialized();
-    }
-
     private static void EnsureInitialized()
     {
-        if (_initialized) return;
+        lock (InitLock)
+        {
+            if (_initialized) return;
+        }
 
-        lock (_initLock)
+        lock (InitLock)
         {
             if (_initialized) return;
 
@@ -66,13 +64,16 @@ public class DngSdkWriter : IRawImageWriter, IDisposable
         }
     }
 
-    public Task WriteAsync(RawImage image, string path)
+    /// <inheritdoc />
+    public Task WriteAsync(RawImage image, string outputPath)
     {
-        return Task.Run(() => Write(path, image));
+        return Task.Run(() => Write(image, outputPath));
     }
 
-    public void Write(string path, RawImage image)
+    /// <inheritdoc />
+    public void Write(RawImage image, string outputPath)
     {
+        EnsureInitialized();
         if (string.IsNullOrEmpty(image.SourcePath))
         {
             throw new ArgumentException(
@@ -86,43 +87,43 @@ public class DngSdkWriter : IRawImageWriter, IDisposable
                 $"Source DNG file not found: {image.SourcePath}", image.SourcePath);
         }
 
-        Console.WriteLine($"[DngSdkWriter] Writing DNG: {path}");
+        Console.WriteLine($"[DngSdkWriter] Writing DNG: {outputPath}");
         Console.WriteLine($"  Source: {image.SourcePath}");
         Console.WriteLine($"  Dimensions: {image.Width}x{image.Height}");
         Console.WriteLine($"  WhiteLevel: {image.WhiteLevel}");
 
         // Pin the pixel data and pass to native code
-        GCHandle handle = default;
+        GCHandle pinnedHandle = default;
         try
         {
-            // Get raw bytes from ushort array
-            byte[] pixelBytes = new byte[image.Data.Length * sizeof(ushort)];
+            // Convert ushort array to byte array for native interop
+            var pixelBytes = new byte[image.Data.Length * sizeof(ushort)];
             Buffer.BlockCopy(image.Data, 0, pixelBytes, 0, pixelBytes.Length);
 
-            handle = GCHandle.Alloc(pixelBytes, GCHandleType.Pinned);
-            IntPtr pixelPtr = handle.AddrOfPinnedObject();
+            pinnedHandle = GCHandle.Alloc(pixelBytes, GCHandleType.Pinned);
+            var pixelDataPointer = pinnedHandle.AddrOfPinnedObject();
 
-            int result = write_dng_to_disk(
+            var result = write_dng_to_disk(
                 image.SourcePath,
-                path,
-                pixelPtr,
+                outputPath,
+                pixelDataPointer,
                 image.Width,
                 image.Height,
                 image.WhiteLevel);
 
             if (result != 0)
             {
-                string errorMsg = GetLastErrorMessage();
-                throw new IOException($"DNG SDK write failed (code {result}): {errorMsg}");
+                var lastErrorMessage = GetLastErrorMessage();
+                throw new IOException($"DNG SDK write failed (code {result}): {lastErrorMessage}");
             }
 
-            Console.WriteLine($"[DngSdkWriter] Successfully wrote: {path}");
+            Console.WriteLine($"[DngSdkWriter] Successfully wrote: {outputPath}");
         }
         finally
         {
-            if (handle.IsAllocated)
+            if (pinnedHandle.IsAllocated)
             {
-                handle.Free();
+                pinnedHandle.Free();
             }
         }
     }
@@ -131,7 +132,7 @@ public class DngSdkWriter : IRawImageWriter, IDisposable
     {
         try
         {
-            IntPtr errorPtr = get_last_error();
+            var errorPtr = get_last_error();
             if (errorPtr != IntPtr.Zero)
             {
                 return Marshal.PtrToStringAnsi(errorPtr) ?? "Unknown error";

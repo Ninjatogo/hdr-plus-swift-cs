@@ -1,0 +1,291 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:BurstPhoto.GUI.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="700" d:DesignHeight="550"
+        x:Class="BurstPhoto.GUI.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Icon="/Assets/avalonia-logo.ico"
+        Title="BurstPhoto"
+        MinWidth="600" MinHeight="450"
+        Width="700" Height="550">
+
+    <Design.DataContext>
+        <vm:MainWindowViewModel/>
+    </Design.DataContext>
+
+    <Grid RowDefinitions="*, Auto">
+
+        <!-- Main Content with Tabs -->
+        <TabControl Grid.Row="0" Margin="16,16,16,16">
+
+            <!-- Process Tab -->
+            <TabItem Header="Process">
+                <Grid RowDefinitions="*, Auto" Margin="0,16,0,0">
+
+                    <!-- Drop Zone -->
+                    <Border Grid.Row="0"
+                            Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"
+                            BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
+                            BorderThickness="2"
+                            CornerRadius="12"
+                            Margin="0,0,0,16"
+                            DragDrop.AllowDrop="True">
+                        <Panel>
+                            <!-- Empty state -->
+                            <StackPanel VerticalAlignment="Center"
+                                        HorizontalAlignment="Center"
+                                        IsVisible="{Binding !HasFiles}">
+                                <TextBlock Text="Drop RAW files here"
+                                           FontSize="24"
+                                           FontWeight="Light"
+                                           HorizontalAlignment="Center"
+                                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                                <TextBlock Text="or"
+                                           FontSize="14"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,12"
+                                           Foreground="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"/>
+                                <Button Content="Browse Files..."
+                                        Click="OnAddFilesClick"
+                                        HorizontalAlignment="Center"/>
+                            </StackPanel>
+
+                            <!-- Files list -->
+                            <Grid IsVisible="{Binding HasFiles}" Margin="16">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <TextBlock Grid.Row="0"
+                                           Text="{Binding InputFilesCountText}"
+                                           FontSize="14"
+                                           FontWeight="SemiBold"
+                                           Margin="0,0,0,8"/>
+
+                                <ListBox Grid.Row="1"
+                                         ItemsSource="{Binding InputFiles}"
+                                         SelectionMode="Multiple"
+                                         Background="Transparent">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       ToolTip.Tip="{Binding}"/>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+
+                                <StackPanel Grid.Row="2"
+                                            Orientation="Horizontal"
+                                            Spacing="8"
+                                            Margin="0,12,0,0">
+                                    <Button Content="Add More..." Click="OnAddFilesClick"/>
+                                    <Button Content="Clear All" Command="{Binding ClearFilesCommand}"/>
+                                </StackPanel>
+                            </Grid>
+                        </Panel>
+                    </Border>
+
+                    <!-- Process Button -->
+                    <Button Grid.Row="1"
+                            Content="Process"
+                            Command="{Binding ProcessCommand}"
+                            IsEnabled="{Binding CanProcess}"
+                            HorizontalAlignment="Stretch"
+                            HorizontalContentAlignment="Center"
+                            FontSize="16"
+                            Padding="24,12"
+                            Classes="accent"/>
+                </Grid>
+            </TabItem>
+
+            <!-- Options Tab -->
+            <TabItem Header="Options">
+                <ScrollViewer Margin="0,16,0,0">
+                    <StackPanel Spacing="24">
+
+                        <!-- Algorithm Section -->
+                        <StackPanel Spacing="12">
+                            <TextBlock Text="Algorithm" Classes="sectionHeader"/>
+                            <Grid ColumnDefinitions="*, *" ColumnSpacing="16">
+                                <StackPanel Grid.Column="0" Spacing="4">
+                                    <TextBlock Text="Merging Algorithm" Classes="fieldLabel"/>
+                                    <ComboBox ItemsSource="{Binding AlgorithmOptions}"
+                                              SelectedIndex="{Binding SelectedAlgorithmIndex}"
+                                              HorizontalAlignment="Stretch"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Spacing="4">
+                                    <TextBlock Text="Exposure Control" Classes="fieldLabel"/>
+                                    <ComboBox ItemsSource="{Binding ExposureControlOptions}"
+                                              SelectedIndex="{Binding SelectedExposureControlIndex}"
+                                              HorizontalAlignment="Stretch"/>
+                                </StackPanel>
+                            </Grid>
+                        </StackPanel>
+
+                        <!-- Alignment Section -->
+                        <StackPanel Spacing="12">
+                            <TextBlock Text="Alignment" Classes="sectionHeader"/>
+                            <Grid ColumnDefinitions="*, *" ColumnSpacing="16">
+                                <StackPanel Grid.Column="0" Spacing="4">
+                                    <TextBlock Text="Tile Size" Classes="fieldLabel"/>
+                                    <ComboBox ItemsSource="{Binding TileSizeOptions}"
+                                              SelectedIndex="{Binding SelectedTileSizeIndex}"
+                                              HorizontalAlignment="Stretch"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Spacing="4">
+                                    <TextBlock Text="Search Distance" Classes="fieldLabel"/>
+                                    <ComboBox ItemsSource="{Binding SearchDistanceOptions}"
+                                              SelectedIndex="{Binding SelectedSearchDistanceIndex}"
+                                              HorizontalAlignment="Stretch"/>
+                                </StackPanel>
+                            </Grid>
+                        </StackPanel>
+
+                        <!-- Output Section -->
+                        <StackPanel Spacing="12">
+                            <TextBlock Text="Output" Classes="sectionHeader"/>
+                            <Grid ColumnDefinitions="*, *" ColumnSpacing="16">
+                                <StackPanel Grid.Column="0" Spacing="4">
+                                    <TextBlock Text="Bit Depth" Classes="fieldLabel"/>
+                                    <ComboBox ItemsSource="{Binding BitDepthOptions}"
+                                              SelectedIndex="{Binding SelectedBitDepthIndex}"
+                                              HorizontalAlignment="Stretch"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Spacing="4">
+                                    <TextBlock Text="GPU Device" Classes="fieldLabel"/>
+                                    <ComboBox ItemsSource="{Binding GpuOptions}"
+                                              SelectedIndex="{Binding SelectedGpuIndex}"
+                                              HorizontalAlignment="Stretch"/>
+                                </StackPanel>
+                            </Grid>
+                        </StackPanel>
+
+                        <!-- Noise Reduction -->
+                        <StackPanel Spacing="8">
+                            <Grid ColumnDefinitions="*, Auto">
+                                <TextBlock Grid.Column="0" Text="Noise Reduction" Classes="sectionHeader"/>
+                                <TextBlock Grid.Column="1"
+                                           Text="{Binding NoiseReduction, StringFormat='{}{0:F1}'}"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                            </Grid>
+                            <Slider Minimum="0" Maximum="50"
+                                    Value="{Binding NoiseReduction}"
+                                    TickFrequency="5"/>
+                        </StackPanel>
+
+                        <!-- Debug Options -->
+                        <StackPanel Spacing="12">
+                            <TextBlock Text="Debug" Classes="sectionHeader"/>
+                            <WrapPanel Orientation="Horizontal">
+                                <CheckBox Content="Debug Dump"
+                                          IsChecked="{Binding EnableDebugDump}"
+                                          Margin="0,0,24,8"/>
+                                <CheckBox Content="Validate FFT"
+                                          IsChecked="{Binding EnableFftValidation}"
+                                          Margin="0,0,24,8"/>
+                                <CheckBox Content="Profiling"
+                                          IsChecked="{Binding EnableProfiling}"
+                                          Margin="0,0,24,8"/>
+                                <CheckBox Content="Skip Reduce Artifacts"
+                                          IsChecked="{Binding SkipReduceArtifacts}"
+                                          Margin="0,0,24,8"/>
+                            </WrapPanel>
+                        </StackPanel>
+
+                        <!-- Logging -->
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="Logging" Classes="sectionHeader"/>
+                            <CheckBox Content="Save log to file"
+                                      IsChecked="{Binding EnableLogging}"/>
+                            <Grid ColumnDefinitions="*, Auto"
+                                  IsEnabled="{Binding EnableLogging}"
+                                  Margin="24,0,0,0">
+                                <TextBox Grid.Column="0"
+                                         Text="{Binding LogFilePath}"
+                                         Watermark="Auto-generated if empty"/>
+                                <Button Grid.Column="1"
+                                        Content="Browse..."
+                                        Click="OnBrowseLogFileClick"
+                                        Margin="8,0,0,0"/>
+                            </Grid>
+                        </StackPanel>
+
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+        </TabControl>
+
+        <!-- Bottom Bar: Output Directory + Progress -->
+        <Border Grid.Row="1"
+                Background="{DynamicResource SystemControlBackgroundChromeMediumBrush}"
+                BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}"
+                BorderThickness="0,1,0,0"
+                Padding="16,12">
+            <Grid RowDefinitions="Auto, Auto" RowSpacing="8">
+
+                <!-- Progress (visible when processing) -->
+                <StackPanel Grid.Row="0"
+                            IsVisible="{Binding IsProcessing}"
+                            Spacing="4">
+                    <ProgressBar Value="{Binding ProgressValue}"
+                                 Minimum="0" Maximum="100"
+                                 Height="6"/>
+                    <Grid ColumnDefinitions="*, Auto">
+                        <TextBlock Grid.Column="0"
+                                   Text="{Binding StatusMessage}"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+                        <Button Grid.Column="1"
+                                Content="Cancel"
+                                Command="{Binding CancelCommand}"
+                                Padding="12,2"
+                                FontSize="11"/>
+                    </Grid>
+                </StackPanel>
+
+                <!-- Output Directory -->
+                <Grid Grid.Row="1" ColumnDefinitions="Auto, *, Auto">
+                    <TextBlock Grid.Column="0"
+                               Text="Output:"
+                               VerticalAlignment="Center"
+                               Margin="0,0,8,0"
+                               FontSize="12"/>
+                    <TextBox Grid.Column="1"
+                             Text="{Binding OutputDirectory}"
+                             IsReadOnly="True"
+                             FontSize="12"/>
+                    <Button Grid.Column="2"
+                            Content="..."
+                            Click="OnBrowseOutputClick"
+                            Margin="8,0,0,0"
+                            Padding="12,4"/>
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+
+    <Window.Styles>
+        <Style Selector="TextBlock.sectionHeader">
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+
+        <Style Selector="TextBlock.fieldLabel">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="{DynamicResource SystemControlForegroundBaseMediumBrush}"/>
+        </Style>
+
+        <Style Selector="Button.accent">
+            <Setter Property="Background" Value="{DynamicResource SystemAccentColor}"/>
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+    </Window.Styles>
+
+</Window>

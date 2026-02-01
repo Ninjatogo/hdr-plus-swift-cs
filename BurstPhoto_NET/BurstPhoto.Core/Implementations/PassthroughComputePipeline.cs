@@ -1,7 +1,5 @@
 using BurstPhoto.Core.Interfaces;
 using BurstPhoto.Core.Models;
-using System.Threading.Tasks;
-using System.Threading.Tasks;
 
 namespace BurstPhoto.Core.Implementations;
 
@@ -11,10 +9,17 @@ namespace BurstPhoto.Core.Implementations;
 /// </summary>
 public class PassthroughComputePipeline : IComputePipeline
 {
-    public Task<RawImage> ProcessAsync(RenderingInput input, ProcessingOptions options, ProcessingProgress progress)
+    public Task<RawImage> ProcessAsync(
+        RenderingInput input,
+        ProcessingOptions options,
+        ProcessingProgress progress,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         Console.WriteLine("[PassthroughComputePipeline] Using mock compute (no GPU processing)");
-        progress.ProgressInt += 50_000_000;
+        progress.Update(85_000_000, "Processing (passthrough)...");
+
         return Task.FromResult(input.Images[input.ReferenceFrameIndex]);
     }
 

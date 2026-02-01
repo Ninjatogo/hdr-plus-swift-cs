@@ -5,38 +5,52 @@ using System.Text;
 
 namespace BurstPhoto.Core.Implementations;
 
+/// <summary>
+/// Writes raw images to Netpbm format (PGM for grayscale, PPM for RGB).
+/// </summary>
+/// <remarks>
+/// This is a simple writer primarily used for debugging and testing.
+/// The output format is portable but not suitable for final output as it lacks metadata.
+/// Pixel values are written as 16-bit big-endian values.
+/// </remarks>
 public class SimpleRawWriter : IRawImageWriter
 {
-    public void Write(string path, RawImage image)
+    /// <summary>
+    /// Maximum pixel value for 16-bit output.
+    /// </summary>
+    private const int MaxPixelValue = 65535;
+
+    /// <inheritdoc />
+    public void Write(RawImage image, string outputPath)
     {
-        int pixelCount = image.Width * image.Height;
-        bool isRgb = image.Data.Length >= pixelCount * 3; // >= to be safe
+        var pixelCount = image.Width * image.Height;
+        var isRgb = image.Data.Length >= pixelCount * 3;
 
-        using var fs = File.Create(path);
-        using var writer = new BinaryWriter(fs);
+        using var fileStream = File.Create(outputPath);
+        using var writer = new BinaryWriter(fileStream);
 
-        // Header
-        string magic = isRgb ? "P6" : "P5";
-        string header = $"{magic}\n{image.Width} {image.Height}\n65535\n";
-        byte[] headerBytes = Encoding.ASCII.GetBytes(header);
+        // Write Netpbm header: P5 for grayscale (PGM), P6 for RGB (PPM)
+        var formatMagic = isRgb ? "P6" : "P5";
+        var header = $"{formatMagic}\n{image.Width} {image.Height}\n{MaxPixelValue}\n";
+        var headerBytes = Encoding.ASCII.GetBytes(header);
         writer.Write(headerBytes);
 
-        // Data (Netpbm is Big Endian)
-        byte[] buffer = new byte[image.Data.Length * 2];
-        for (int i = 0; i < image.Data.Length; i++)
+        // Convert pixel data to big-endian byte array (Netpbm uses big-endian)
+        var pixelBuffer = new byte[image.Data.Length * 2];
+        for (var pixelIndex = 0; pixelIndex < image.Data.Length; pixelIndex++)
         {
-            ushort val = image.Data[i];
-            // Swap to Big Endian
-            buffer[2 * i] = (byte)(val >> 8);
-            buffer[2 * i + 1] = (byte)(val & 0xFF);
+            var pixelValue = image.Data[pixelIndex];
+            pixelBuffer[2 * pixelIndex] = (byte)(pixelValue >> 8);
+            pixelBuffer[2 * pixelIndex + 1] = (byte)(pixelValue & 0xFF);
         }
 
-        writer.Write(buffer);
+        writer.Write(pixelBuffer);
     }
 
-    public Task WriteAsync(RawImage image, string path)
+    /// <inheritdoc />
+    public Task WriteAsync(RawImage image, string outputPath)
     {
-        // For now, delegate to sync version - I/O is typically fast for single images
-        return Task.Run(() => Write(path, image));
+        // Delegate to synchronous version - I/O is typically fast for single images
+        return Task.Run(() => Write(image, outputPath));
     }
 }

@@ -1,7 +1,3 @@
-using System;
-using System.IO;
-using System.Linq;
-
 namespace BurstPhoto.Tests;
 
 /// <summary>
@@ -31,7 +27,7 @@ public static class TestDataPaths
         
         public static string[] InputFiles => Directory.Exists(InputFolder) 
             ? Directory.GetFiles(InputFolder, "*.DNG").OrderBy(f => f).ToArray() 
-            : Array.Empty<string>();
+            : [];
     }
 
     /// <summary>
@@ -43,7 +39,7 @@ public static class TestDataPaths
         
         public static string[] InputFiles => Directory.Exists(Folder)
             ? Directory.GetFiles(Folder, "*.DNG").OrderBy(f => f).ToArray()
-            : Array.Empty<string>();
+            : [];
     }
 
     private static string FindBurstSamplesFolder()
