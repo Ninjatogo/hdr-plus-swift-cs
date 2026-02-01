@@ -27,7 +27,7 @@ namespace BurstPhoto.Rendering.Implementations;
 ///   <item><description>Convert back to 16-bit output</description></item>
 /// </list>
 /// </remarks>
-public unsafe class VulkanComputePipeline : IComputePipeline
+public class VulkanComputePipeline : IComputePipeline
 {
     #region Constants
 

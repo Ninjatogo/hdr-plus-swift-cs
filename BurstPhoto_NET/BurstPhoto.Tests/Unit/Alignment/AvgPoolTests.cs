@@ -1,6 +1,4 @@
 using BurstPhoto.Core.Models;
-using BurstPhoto.Rendering;
-using BurstPhoto.Rendering.Pipelines;
 using BurstPhoto.Tests.TestHelpers;
 using Silk.NET.Vulkan;
 

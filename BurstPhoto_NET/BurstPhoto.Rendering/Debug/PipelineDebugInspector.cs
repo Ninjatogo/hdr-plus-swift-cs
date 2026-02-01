@@ -1,6 +1,3 @@
-using BurstPhoto.Core.Models;
-using Silk.NET.Vulkan;
-
 namespace BurstPhoto.Rendering.Debug;
 
 /// <summary>

@@ -37,32 +37,38 @@ public unsafe class VulkanDescriptorManager : IDisposable
         // Detailed breakdown of descriptor set allocations:
         //
         // Per iteration (Higher Quality has 4, Fast has 1):
-        //   - Reference frame setup: ~10 sets (prepare, pyramid, conversions)
+        //   - Reference frame setup: ~15 sets (prepare, pyramid, conversions, RMS, noise estimation)
         //   - Per comparison image (imageCount - 1 comparisons):
         //     - Alignment search (4 pyramid levels × 4 sets each): 16 sets
         //     - Warp: 1 set
         //     - Merge operations (frequency mode): ~15 sets (FFT, merge, mismatch, etc.)
-        //     - Total per comparison: ~32 sets
-        //   - Post-iteration processing: ~5 sets (deconvolute, backward FFT, reduce artifacts)
+        //     - Comparison pyramid building: ~5 sets
+        //     - Total per comparison: ~37 sets
+        //   - Post-iteration processing: ~10 sets (deconvolute, backward FFT, reduce artifacts, convert)
         //
-        // Formula: iterations × (refSetup + (comparisons × setsPerComparison) + postIteration)
+        // Post-processing (once after all iterations):
+        //   - Exposure correction: ~5 sets (max reduction X, max reduction Y, apply curve)
+        //   - Noise estimation: ~3 sets
+        //
+        // Formula: iterations × (refSetup + (comparisons × setsPerComparison) + postIteration) + postProcessing
 
-        const int refSetupSets = 10;
-        const int setsPerComparison = 32;
-        const int postIterationSets = 5;
+        const int refSetupSets = 15;
+        const int setsPerComparison = 37;
+        const int postIterationSets = 10;
+        const int postProcessingSets = 10; // Exposure correction, final noise estimation, etc.
 
         var iterations = isHigherQuality ? 4 : 1;
         var comparisons = imageCount - 1; // Reference frame is not compared against itself
 
         var perIteration = refSetupSets + (comparisons * setsPerComparison) + postIterationSets;
-        var required = iterations * perIteration;
+        var required = (iterations * perIteration) + postProcessingSets;
 
-        // Add 25% safety margin and round up to nearest 100
-        var withMargin = (uint)(required * 1.25);
+        // Add 30% safety margin and round up to nearest 100
+        var withMargin = (uint)(required * 1.3);
         var rounded = ((withMargin + 99) / 100) * 100;
 
-        // Minimum of 200 sets for small workloads
-        return Math.Max(200, rounded);
+        // Minimum of 300 sets for small workloads (accounts for base overhead)
+        return Math.Max(300, rounded);
     }
 
     /// <summary>

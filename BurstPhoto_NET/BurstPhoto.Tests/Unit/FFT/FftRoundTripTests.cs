@@ -1,5 +1,3 @@
-using BurstPhoto.Rendering;
-using BurstPhoto.Rendering.Pipelines;
 using BurstPhoto.Rendering.Validation;
 using BurstPhoto.Tests.TestHelpers;
 using Silk.NET.Vulkan;

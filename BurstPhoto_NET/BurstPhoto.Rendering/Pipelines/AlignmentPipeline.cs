@@ -202,9 +202,9 @@ public unsafe class AlignmentPipeline
     /// <summary>
     /// Performs multi-level pyramid alignment search.
     /// </summary>
-    /// <param name="refPyramid">Reference image pyramid (finest to coarsest)</param>
-    /// <param name="compPyramid">Comparison image pyramid</param>
-    /// <param name="alignmentOut">Output alignment vectors texture</param>
+    /// <param name="referencePyramid">Reference image pyramid (finest to coarsest)</param>
+    /// <param name="comparisonPyramid">Comparison image pyramid</param>
+    /// <param name="alignmentOutput">Output alignment vectors texture</param>
     /// <param name="baseTileInfo">Tile configuration at finest level</param>
     /// <param name="scale">Scale factor</param>
     /// <param name="uniformExposure">Whether images have uniform exposure (affects difference calculation)</param>
@@ -423,11 +423,11 @@ public unsafe class AlignmentPipeline
     /// <summary>
     /// Warps the input texture using alignment vectors.
     /// </summary>
-    /// <param name="altImage">Input texture to warp</param>
-    /// <param name="output">Output warped texture</param>
-    /// <param name="alignment">Alignment vectors texture</param>
+    /// <param name="sourceImage">Input texture to warp</param>
+    /// <param name="outputImage">Output warped texture</param>
+    /// <param name="alignmentVectors">Alignment vectors texture</param>
     /// <param name="tileInfo">Tile configuration</param>
-    /// <param name="padLeft">Left padding offset for coordinate clamping</param>
+    /// <param name="paddingLeft">Left padding offset for coordinate clamping</param>
     /// <param name="paddingTop">Top padding offset for coordinate clamping</param>
     public void ExecuteWarp(VulkanImage sourceImage, VulkanImage outputImage, VulkanImage alignmentVectors, TileInfo tileInfo, int paddingLeft = 0, int paddingTop = 0)
     {
