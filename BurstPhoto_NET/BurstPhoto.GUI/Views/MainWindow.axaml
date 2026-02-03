@@ -195,6 +195,10 @@
                                 <CheckBox Content="Skip Reduce Artifacts"
                                           IsChecked="{Binding SkipReduceArtifacts}"
                                           Margin="0,0,24,8"/>
+                                <CheckBox Content="Verbose Logging"
+                                          IsChecked="{Binding Verbose}"
+                                          ToolTip.Tip="Enable verbose logging with GPU texture validation (slower processing)"
+                                          Margin="0,0,24,8"/>
                             </WrapPanel>
                         </StackPanel>
 

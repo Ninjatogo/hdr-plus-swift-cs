@@ -183,6 +183,12 @@ public class ProcessingOptions
     public bool EnableProfiling { get; set; }
 
     /// <summary>
+    /// Gets or sets whether to output verbose diagnostic information.
+    /// When enabled, performs expensive GPU->CPU transfers for validation logging.
+    /// </summary>
+    public bool Verbose { get; set; }
+
+    /// <summary>
     /// Converts a <see cref="TileSizeOption"/> to its pixel value.
     /// </summary>
     /// <param name="option">The tile size option.</param>

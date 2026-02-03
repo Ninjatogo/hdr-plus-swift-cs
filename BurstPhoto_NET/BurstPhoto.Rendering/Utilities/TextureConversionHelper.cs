@@ -14,6 +14,12 @@ public unsafe class TextureConversionHelper
     private readonly VulkanDescriptorManager _descriptors;
     private readonly TextureUtilities _textureUtils;
 
+    /// <summary>
+    /// Gets or sets whether verbose validation logging is enabled.
+    /// When true, performs expensive GPU->CPU transfers for texture validation.
+    /// </summary>
+    public bool Verbose { get; set; }
+
     public TextureConversionHelper(VulkanContext ctx, VulkanDescriptorManager descriptors, TextureUtilities textureUtils)
     {
         _ctx = ctx;
@@ -34,7 +40,8 @@ public unsafe class TextureConversionHelper
         int cropX = 0,
         int cropY = 0)
     {
-        // === PRE-SHADER DATA VALIDATION ===
+        // === PRE-SHADER DATA VALIDATION (only when verbose enabled) ===
+        if (Verbose)
         {
             var inputData = bayerInput.GetData<float>();
             var sampleCount = Math.Min(inputData.Length, 1000);
@@ -64,7 +71,7 @@ public unsafe class TextureConversionHelper
 
             if (inputSum < 0.01 && dataRegionSum < 0.01)
             {
-                Console.WriteLine($"[CONVERT_RGBA] ❌ ERROR: Input texture is EMPTY before shader execution!");
+                Console.WriteLine($"[CONVERT_RGBA] ERROR: Input texture is EMPTY before shader execution!");
             }
         }
 
@@ -76,7 +83,8 @@ public unsafe class TextureConversionHelper
             BufferUsageFlags.UniformBufferBit, MemoryPropertyFlags.HostVisibleBit);
         paramBuffer.SetData([texParams]);
 
-        Console.WriteLine($"[CONVERT_RGBA] TextureParams: CfaPattern={cfaIndex}, PadLeft={cropX}, PadTop={cropY}");
+        if (Verbose)
+            Console.WriteLine($"[CONVERT_RGBA] TextureParams: CfaPattern={cfaIndex}, PadLeft={cropX}, PadTop={cropY}");
 
         // Dummy textures for unused bindings
         using var dummyRgba = new VulkanImage(_ctx, 1, 1, Format.R32G32B32A32Sfloat, ImageUsageFlags.SampledBit | ImageUsageFlags.StorageBit);
@@ -110,13 +118,15 @@ public unsafe class TextureConversionHelper
         kernel.BindPipeline(cmd);
         _ctx.Vk.CmdBindDescriptorSets(cmd, PipelineBindPoint.Compute, kernel.PipelineLayout, 0, 1, &set, 0, null);
 
-        Console.WriteLine($"[DEBUG] ConvertToRgba: Input={bayerInput.Width}x{bayerInput.Height}, Output={rgbaOutput.Width}x{rgbaOutput.Height}, CropX={cropX}, CropY={cropY}");
+        if (Verbose)
+            Console.WriteLine($"[DEBUG] ConvertToRgba: Input={bayerInput.Width}x{bayerInput.Height}, Output={rgbaOutput.Width}x{rgbaOutput.Height}, CropX={cropX}, CropY={cropY}");
         kernel.Dispatch(cmd, rgbaOutput.Width, rgbaOutput.Height, 1);
 
         _ctx.EndSingleTimeCommands(cmd);
 
-        // POST-SHADER VALIDATION
-        ValidateConversionOutput(rgbaOutput);
+        // POST-SHADER VALIDATION (only when verbose enabled)
+        if (Verbose)
+            ValidateConversionOutput(rgbaOutput);
     }
 
     /// <summary>

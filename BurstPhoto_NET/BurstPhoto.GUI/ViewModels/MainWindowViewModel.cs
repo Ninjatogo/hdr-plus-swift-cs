@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Threading;
@@ -80,6 +82,9 @@ public partial class MainWindowViewModel : ViewModelBase
 
     [ObservableProperty]
     private bool _skipReduceArtifacts;
+
+    [ObservableProperty]
+    private bool _verbose;
 
     [ObservableProperty]
     private bool _enableLogging;
@@ -210,9 +215,28 @@ public partial class MainWindowViewModel : ViewModelBase
         ProgressValue = 0;
 
         IDenoisePipeline? pipeline = null;
+        TextWriter? logWriter = null;
+        var originalOut = Console.Out;
 
         try
         {
+            // Setup logging if requested
+            if (EnableLogging)
+            {
+                var logPath = string.IsNullOrWhiteSpace(LogFilePath)
+                    ? GenerateLogPath()
+                    : LogFilePath;
+                var logDir = Path.GetDirectoryName(logPath);
+                if (!string.IsNullOrEmpty(logDir) && !Directory.Exists(logDir))
+                {
+                    Directory.CreateDirectory(logDir);
+                }
+
+                logWriter = new StreamWriter(logPath, append: false) { AutoFlush = true };
+                Console.SetOut(new TeeTextWriter(originalOut, logWriter));
+                Console.WriteLine($"[LOG] Output being saved to: {logPath}");
+            }
+
             // Create pipeline with selected GPU
             var gpuIndex = GetSelectedGpuIndex();
             pipeline = _pipelineFactory.Create(gpuIndex);
@@ -282,6 +306,13 @@ public partial class MainWindowViewModel : ViewModelBase
             _cts?.Dispose();
             _cts = null;
 
+            // Restore original console output and close log file
+            if (logWriter != null)
+            {
+                Console.SetOut(originalOut);
+                await logWriter.DisposeAsync();
+            }
+
             // Dispose the pipeline to release GPU resources and clear cached results
             pipeline?.Dispose();
 
@@ -333,7 +364,46 @@ public partial class MainWindowViewModel : ViewModelBase
             EnableDebugDump = EnableDebugDump,
             EnableFftValidation = EnableFftValidation,
             EnableProfiling = EnableProfiling,
-            SkipReduceArtifacts = SkipReduceArtifacts
+            SkipReduceArtifacts = SkipReduceArtifacts,
+            Verbose = Verbose
         };
+    }
+
+    private static string GenerateLogPath()
+    {
+        var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        return Path.Combine("logs", $"process_{timestamp}.log");
+    }
+}
+
+/// <summary>
+/// TextWriter that writes to two outputs simultaneously (console and file).
+/// </summary>
+internal class TeeTextWriter(TextWriter primary, TextWriter secondary) : TextWriter
+{
+    public override Encoding Encoding => primary.Encoding;
+
+    public override void Write(char value)
+    {
+        primary.Write(value);
+        secondary.Write(value);
+    }
+
+    public override void Write(string? value)
+    {
+        primary.Write(value);
+        secondary.Write(value);
+    }
+
+    public override void WriteLine(string? value)
+    {
+        primary.WriteLine(value);
+        secondary.WriteLine(value);
+    }
+
+    public override void Flush()
+    {
+        primary.Flush();
+        secondary.Flush();
     }
 }

@@ -296,7 +296,8 @@ public class DenoisePipeline : IDenoisePipeline
             EnableDebugDump = options.EnableDebugDump,
             EnableFftValidation = options.EnableFftValidation,
             SkipReduceArtifacts = options.SkipReduceArtifacts,
-            EnableProfiling = options.EnableProfiling
+            EnableProfiling = options.EnableProfiling,
+            Verbose = options.Verbose
         };
 
         // Non-Bayer sensors have restrictions

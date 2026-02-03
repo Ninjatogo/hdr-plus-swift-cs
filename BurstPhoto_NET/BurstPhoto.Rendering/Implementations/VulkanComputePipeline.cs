@@ -197,6 +197,9 @@ public class VulkanComputePipeline : IComputePipeline
         _debugHelper.Enabled = options.EnableDebugDump;
         _debugInspector.Enabled = options.EnableDebugDump;
 
+        // Enable verbose logging for texture conversion helper
+        _conversionHelper.Verbose = options.Verbose;
+
         // Enable performance profiling if requested
         _profiler.Enabled = options.EnableProfiling;
         _profiler.Reset();

@@ -74,6 +74,10 @@ public class ProcessCommand(IDenoisePipeline pipeline) : AsyncCommand<ProcessCom
         [CommandOption("--profile")]
         [Description("Enable performance profiling: outputs detailed timing for each pipeline stage")]
         public bool Profile { get; set; } = false;
+
+        [CommandOption("--verbose")]
+        [Description("Enable verbose logging with GPU texture validation (slower processing)")]
+        public bool Verbose { get; set; } = false;
     }
 
     public override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken)
@@ -112,8 +116,6 @@ public class ProcessCommand(IDenoisePipeline pipeline) : AsyncCommand<ProcessCom
                 Console.WriteLine($"[LOG] Output being saved to: {logPath}");
             }
             // Parse options
-            Console.WriteLine($"[CLI DEBUG] settings.ValidateFft = {settings.ValidateFft}");
-            Console.WriteLine($"[CLI DEBUG] settings.DebugDump = {settings.DebugDump}");
             var options = new ProcessingOptions
             {
                 Merging = ParseEnum<MergingAlgorithm>(settings.Algorithm, "algorithm"),
@@ -121,13 +123,14 @@ public class ProcessCommand(IDenoisePipeline pipeline) : AsyncCommand<ProcessCom
                 SearchDistance = ParseEnum<SearchDistanceOption>(settings.SearchDistance, "search-distance"),
                 NoiseReduction = settings.NoiseReduction,
                 ExposureControl = ParseExposureControl(settings.ExposureControl),
-                OutputBitDepth = settings.BitDepth.Equals("16Bit", StringComparison.OrdinalIgnoreCase) 
-                    ? OutputBitDepthOption.Bit16 
+                OutputBitDepth = settings.BitDepth.Equals("16Bit", StringComparison.OrdinalIgnoreCase)
+                    ? OutputBitDepthOption.Bit16
                     : OutputBitDepthOption.Native,
                 EnableDebugDump = settings.DebugDump,
                 EnableFftValidation = settings.ValidateFft,
                 SkipReduceArtifacts = settings.SkipReduceArtifacts,
-                EnableProfiling = settings.Profile
+                EnableProfiling = settings.Profile,
+                Verbose = settings.Verbose
             };
 
             var progress = new ProcessingProgress();
