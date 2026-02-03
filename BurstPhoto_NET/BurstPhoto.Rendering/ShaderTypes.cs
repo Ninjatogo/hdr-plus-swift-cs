@@ -117,6 +117,11 @@ public struct FrequencyParams
     public float BlackLevelMean;
     public float MeanMismatch;
 
+    // Signal-dependent noise model: σ² = ShotNoiseCoef * signal + ReadNoise
+    // ShotNoiseCoef (α) captures photon shot noise, scales with analog gain (ISO)
+    // Can be read from DNG NoiseProfile tag or estimated as ~1.0/ISO * baseline
+    public float ShotNoiseCoef;
+
     // Per-channel black levels for reduce_artifacts_tile_border
     public int BlackLevel0;
     public int BlackLevel1;

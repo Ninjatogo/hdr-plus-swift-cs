@@ -142,6 +142,17 @@ public unsafe class FrequencyMergePipeline
         // exposureDiff is in centistops — must divide by 100 to get EV
         var exposureFactor = (float)Math.Pow(2.0, exposureDiff / 100.0);
 
+        // Signal-dependent noise model: σ² = α·signal + β
+        // ShotNoiseCoef (α) captures photon shot noise, which scales linearly with signal
+        // For cameras, α is approximately proportional to analog gain (ISO setting)
+        // If DNG NoiseProfile is available, use those values directly.
+        // Otherwise, estimate from noiseSd: α ≈ noiseSd² / (whiteLevel * 0.18) for mid-gray
+        // A reasonable default is based on the noise profile being dominated by shot noise
+        // at mid-to-high signal levels.
+        var shotNoiseCoef = noiseSd > 0
+            ? (float)(noiseSd * noiseSd / Math.Max(whiteLevel * 0.18, 1.0))
+            : 0.001f;  // Default for when noise info is unavailable
+
         var freqParams = new FrequencyParams
         {
             RobustnessNorm = (float)robustnessNorm,
@@ -154,6 +165,7 @@ public unsafe class FrequencyMergePipeline
             WhiteLevel = whiteLevel,
             BlackLevelMean = blackLevel,
             MeanMismatch = 0.01f, // Initial placeholder
+            ShotNoiseCoef = shotNoiseCoef,
             BlackLevel0 = 0, BlackLevel1 = 0, BlackLevel2 = 0, BlackLevel3 = 0
         };
 

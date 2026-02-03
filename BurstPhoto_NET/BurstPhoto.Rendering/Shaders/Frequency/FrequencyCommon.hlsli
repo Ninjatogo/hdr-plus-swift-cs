@@ -25,6 +25,10 @@ cbuffer FrequencyParams : register(b0)
     float BlackLevelMean;
     float MeanMismatch;
 
+    // Signal-dependent noise model: variance = ShotNoiseCoef * signal + ReadNoise
+    // ShotNoiseCoef (alpha) captures photon shot noise, scales with analog gain (ISO)
+    float ShotNoiseCoef;
+
     // Per-channel black levels for reduce_artifacts_tile_border
     int BlackLevel0;
     int BlackLevel1;
