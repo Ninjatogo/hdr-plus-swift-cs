@@ -1,4 +1,5 @@
 #include "dng_sdk_wrapper.h"
+#include "dng_camera_profile.h"
 #include "dng_exceptions.h"
 #include "dng_file_stream.h"
 #include "dng_host.h"
@@ -7,6 +8,7 @@
 #include "dng_info.h"
 #include "dng_negative.h"
 #include "dng_simple_image.h"
+#include "dng_tag_values.h"
 
 // XMP SDK is disabled via qDNGUseXMP=0 preprocessor define
 // If XMP support is needed later, add: #include "dng_xmp_sdk.h"
@@ -72,19 +74,23 @@ int write_dng_to_disk(
 
         // Get the raw IFD info for image structure
         dng_ifd& rawIFD = *info.fIFD[info.fMainIndex];
-        
-        // Validate dimensions match
+
+        // Validate dimensions match the full IFD dimensions
+        // When reading from DNG files, LibRaw returns full sensor frame (including margins)
+        // The DefaultCropSize metadata tells viewers what portion to display
         if (rawIFD.fImageWidth != (uint32)width || rawIFD.fImageLength != (uint32)height) {
-            g_lastError = "Image dimensions don't match source DNG";
+            g_lastError = "Image dimensions (" + std::to_string(width) + "x" + std::to_string(height) +
+                          ") don't match source DNG (" +
+                          std::to_string(rawIFD.fImageWidth) + "x" + std::to_string(rawIFD.fImageLength) + ")";
             return 2;
         }
 
-        // Create new simple image to hold our pixel data
+        // Create new simple image with full IFD bounds
         AutoPtr<dng_simple_image> image_pointer(
             new dng_simple_image(
-                rawIFD.Bounds(), 
-                rawIFD.fSamplesPerPixel, 
-                rawIFD.PixelType(), 
+                rawIFD.Bounds(),
+                rawIFD.fSamplesPerPixel,
+                rawIFD.PixelType(),
                 host.Allocator()
             )
         );

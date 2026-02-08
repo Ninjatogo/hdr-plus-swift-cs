@@ -77,7 +77,7 @@ public class DngSdkWriter : IRawImageWriter, IDisposable
         if (string.IsNullOrEmpty(image.SourcePath))
         {
             throw new ArgumentException(
-                "RawImage.SourcePath must be set to the original DNG path for metadata cloning.", 
+                "RawImage.SourcePath must be set to the original DNG path for metadata cloning.",
                 nameof(image));
         }
 

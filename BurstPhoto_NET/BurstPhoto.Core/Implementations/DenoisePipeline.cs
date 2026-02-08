@@ -1,6 +1,7 @@
 using BurstPhoto.Core.Errors;
 using BurstPhoto.Core.Interfaces;
 using BurstPhoto.Core.Models;
+using BurstPhoto.Core.Services;
 using System.Collections.Concurrent;
 using System.IO;
 
@@ -41,24 +42,92 @@ public class DenoisePipeline : IDenoisePipeline
         // Validate inputs
         ValidateInputs(imagePaths);
 
-        // Load all images in parallel
-        Console.WriteLine("Loading images...");
-        progress.Update(0, "Loading images...");
-        var images = await LoadImagesParallelAsync(imagePaths, cancellationToken);
-        Console.WriteLine($"Time to load all images: {stopwatch.Elapsed.TotalSeconds:F3}s");
+        // Convert non-DNG RAW files to DNG if needed (Sony ARW, Canon CR2, Nikon NEF, etc.)
+        // IMPORTANT: We must convert ALL images to ensure consistent dimensions.
+        // LibRaw reads different dimensions from ARW vs DNG for the same sensor,
+        // and the DNG SDK requires dimensions to match exactly.
+        string? tempDngDirectory = null;
+        IReadOnlyList<string> workingPaths = imagePaths;
 
-        progress.Update(10_000_000, "Analyzing images...");
+        if (imagePaths.Any(DngConverterService.IsNonDngRawFile))
+        {
+            var converter = new DngConverterService();
+            if (!converter.IsAvailable)
+            {
+                throw new InvalidOperationException(
+                    "Non-DNG RAW files detected (e.g., Sony ARW, Canon CR2) but Adobe DNG Converter is not installed. " +
+                    "Please install Adobe DNG Converter from Adobe's website, or convert your files to DNG format first.");
+            }
 
-        // Check resolution consistency
-        ValidateResolutions(images);
+            // Create temp directory for converted files
+            tempDngDirectory = Path.Combine(Path.GetTempPath(), "BurstPhoto_DNG", Guid.NewGuid().ToString("N")[..8]);
+            Directory.CreateDirectory(tempDngDirectory);
 
-        // Analyze exposure
-        var (uniformExposure, exposureBias, isoExposureTime) = AnalyzeExposure(images);
+            Console.WriteLine($"[DenoisePipeline] Converting {imagePaths.Count} RAW files to DNG...");
+            progress.Update(0, "Converting RAW files to DNG...");
 
-        // Select reference frame
-        var refIdx = SelectReferenceFrame(images, uniformExposure, exposureBias, isoExposureTime);
+            try
+            {
+                workingPaths = await converter.ConvertMultipleToDngAsync(
+                    imagePaths, tempDngDirectory, maxConcurrency: 4, cancellationToken);
+                Console.WriteLine($"[DenoisePipeline] Conversion complete.");
+            }
+            catch
+            {
+                CleanupTempDngFiles(tempDngDirectory);
+                throw;
+            }
+        }
+
+        try
+        {
+            // Load all images from working paths (converted DNGs or original files)
+            Console.WriteLine("Loading images...");
+            progress.Update(5_000_000, "Loading images...");
+            var images = await LoadImagesParallelAsync(workingPaths, cancellationToken);
+
+            // Store original paths for output naming (e.g., DSC09035.ARW -> DSC09035_merged.dng)
+            var originalPaths = imagePaths.ToList();
+
+            Console.WriteLine($"Time to load all images: {stopwatch.Elapsed.TotalSeconds:F3}s");
+
+            progress.Update(10_000_000, "Analyzing images...");
+
+            // Check resolution consistency
+            ValidateResolutions(images);
+
+            // Analyze exposure
+            var (uniformExposure, exposureBias, isoExposureTime) = AnalyzeExposure(images);
+
+            // Select reference frame
+            var refIdx = SelectReferenceFrame(images, uniformExposure, exposureBias, isoExposureTime);
+            var refImage = images[refIdx];
+            Console.WriteLine($"Selected reference frame: {refIdx} ({Path.GetFileName(originalPaths[refIdx])})");
+
+            return await ProcessInternalAsync(
+                images, refIdx, originalPaths, options, progress, outputDirectory, stopwatch, cancellationToken);
+        }
+        finally
+        {
+            // Cleanup temporary DNG files
+            CleanupTempDngFiles(tempDngDirectory);
+        }
+    }
+
+    private async Task<string> ProcessInternalAsync(
+        List<RawImage> images,
+        int refIdx,
+        IReadOnlyList<string> originalPaths,
+        ProcessingOptions options,
+        ProcessingProgress progress,
+        string outputDirectory,
+        System.Diagnostics.Stopwatch stopwatch,
+        CancellationToken cancellationToken)
+    {
         var refImage = images[refIdx];
-        Console.WriteLine($"Selected reference frame: {refIdx} ({Path.GetFileName(refImage.SourcePath)})");
+
+        // Re-analyze exposure (needed for effectiveOptions calculation)
+        var (uniformExposure, _, _) = AnalyzeExposure(images);
 
         // Handle non-Bayer sensor constraints
         var mosaicPatternWidth = refImage.MosaicPatternWidth;
@@ -76,7 +145,8 @@ public class DenoisePipeline : IDenoisePipeline
         var tileInfo = TileInfo.Calculate(refImage.Width, refImage.Height, tileSize, searchDist);
         Console.WriteLine($"Tile grid: {tileInfo.TileCountX}x{tileInfo.TileCountY}, search positions: {tileInfo.TotalSearchPositions}");
 
-        // Check cache
+        // Check cache using image source paths
+        var imagePaths = images.Select(img => img.SourcePath).ToList();
         var settingsHash = GenerateSettingsHash(imagePaths, effectiveOptions);
         RawImage result;
 
@@ -110,12 +180,12 @@ public class DenoisePipeline : IDenoisePipeline
             _lastSettingsHash = settingsHash;
         }
 
-        // Clear references to input images to allow GC to reclaim memory sooner
-        // The images list goes out of scope after this method returns, but clearing
-        // the RenderingInput reference helps ensure no lingering references exist.
+        // Generate output filename using original path for naming (e.g., DSC09035.ARW -> DSC09035_merged.dng)
+        var outputPath = GenerateOutputPath(originalPaths[refIdx], outputDirectory, effectiveOptions, images.Count);
 
-        // Generate output filename
-        var outputPath = GenerateOutputPath(refImage.SourcePath, outputDirectory, effectiveOptions, images.Count);
+        // Set the source path for DNG writer to use for metadata cloning
+        // Use the working path (converted DNG) which has matching dimensions
+        result.SourcePath = refImage.SourcePath;
 
         // Write output
         progress.Update(90_000_000, "Writing output file...");
@@ -153,6 +223,28 @@ public class DenoisePipeline : IDenoisePipeline
     }
 
     /// <summary>
+    /// Cleans up temporary DNG files created during conversion.
+    /// </summary>
+    private static void CleanupTempDngFiles(string? tempDirectory)
+    {
+        if (string.IsNullOrEmpty(tempDirectory) || !Directory.Exists(tempDirectory))
+        {
+            return;
+        }
+
+        try
+        {
+            Console.WriteLine($"[DenoisePipeline] Cleaning up temp DNG files: {tempDirectory}");
+            Directory.Delete(tempDirectory, recursive: true);
+        }
+        catch (Exception ex)
+        {
+            // Log but don't throw - cleanup failure shouldn't fail the overall operation
+            Console.WriteLine($"[DenoisePipeline] Warning: Failed to cleanup temp directory: {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// Validates that all images have the same resolution.
     /// </summary>
     private void ValidateResolutions(IReadOnlyList<RawImage> images)
@@ -172,7 +264,7 @@ public class DenoisePipeline : IDenoisePipeline
     /// <summary>
     /// Loads images in parallel using multiple threads.
     /// </summary>
-    private async Task<IReadOnlyList<RawImage>> LoadImagesParallelAsync(
+    private async Task<List<RawImage>> LoadImagesParallelAsync(
         IReadOnlyList<string> imagePaths,
         CancellationToken cancellationToken)
     {

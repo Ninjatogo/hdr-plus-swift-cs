@@ -31,8 +31,8 @@ extern "C" {
     //   white_level: White level value to set (0 to keep original)
     // Returns: 0 on success, non-zero error code on failure
     BURSTPHOTO_API int write_dng_to_disk(
-        const char* in_path, 
-        const char* out_path, 
+        const char* in_path,
+        const char* out_path,
         void* pixel_bytes,
         int width,
         int height,
